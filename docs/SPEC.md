@@ -69,24 +69,33 @@ schedule:
     start: "22:00"             # Only run between these hours
     end: "06:00"
     timezone: "America/Denver"
-
 # Budget configuration
+#
+# How budget modes work:
+# - daily: Each night uses up to max_percent of that day's budget (weekly/7).
+#          Example: 10% daily = use up to 10% of your daily allotment each night.
+# - weekly: Each night uses up to max_percent of the REMAINING weekly budget.
+#           Example: 10% weekly on day 1 = 10% of full week. On day 7 = 10% of what's left.
+#           With aggressive_end_of_week, this ramps up as the week ends to avoid waste.
+#
 budget:
-  mode: daily                  # daily | weekly
-  max_percent: 10              # Max % of daily/weekly budget to use (default: 10)
-  aggressive_end_of_week: false # Use more budget as week ends
-  reserve_percent: 5           # Always keep this % in reserve
+  mode: daily                  # daily | weekly (see explanation above)
+  max_percent: 10              # Max % of budget to use per run (default: 10)
+  aggressive_end_of_week: false # Weekly mode: ramp up spending in last 2 days
+  reserve_percent: 5           # Always keep this % in reserve (never touch)
 
 # Provider configuration (how to track usage)
 providers:
   claude:
     enabled: true
     data_path: "~/.claude"     # Path to Claude Code data directory
+    # File format details: see claude-code-metadata skill
     # stats-cache.json for aggregates
     # projects/<path>/<session>.jsonl for per-message usage
   codex:
     enabled: true
     data_path: "~/.codex"      # Path to Codex data directory
+    # File format parsing reference: ~/code/sidecar/
     # sessions/<year>/<month>/<day>/*.jsonl for session data
     # rate_limits.primary.used_percent for budget tracking
 
@@ -121,8 +130,12 @@ integrations:
   claude_md: true              # Read claude.md for project context
   agents_md: true              # Read agents.md for agent behavior hints
   task_sources:
-    - td                       # td task management
-    - github_issues            # GitHub issues
+    - td:                      # td task management (https://github.com/anthropics/td)
+        enabled: true
+        teach_agent: true      # Include brief td usage in agent prompts
+        # Agent learns: td list, td start, td log, td complete
+        # AGENTS.md should already have td instructions, but this ensures it
+    - github_issues            # GitHub issues with "nightshift" label
     - file: TODO.md            # Custom file
 
 # Logging and reporting
@@ -161,6 +174,10 @@ reporting:
 ```
 
 ### Budget Calculation
+
+**Daily Mode**: You get 1/7 of your weekly budget each day. Night Shift takes up to `max_percent` of whatever you haven't used today.
+
+**Weekly Mode**: Night Shift looks at your remaining weekly budget and takes up to `max_percent` of what's left divided by remaining days. With `aggressive_end_of_week`, it spends more in the final days to avoid wasted budget.
 
 ```
 # Daily mode
