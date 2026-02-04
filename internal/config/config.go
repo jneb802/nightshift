@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -321,22 +322,15 @@ func (c *Config) GetProviderBudget(provider string) int {
 // IsTaskEnabled checks if a task type is enabled.
 func (c *Config) IsTaskEnabled(task string) bool {
 	// Check if explicitly disabled
-	for _, disabled := range c.Tasks.Disabled {
-		if disabled == task {
-			return false
-		}
+	if slices.Contains(c.Tasks.Disabled, task) {
+		return false
 	}
 	// If enabled list is empty, all tasks are enabled
 	if len(c.Tasks.Enabled) == 0 {
 		return true
 	}
 	// Check if in enabled list
-	for _, enabled := range c.Tasks.Enabled {
-		if enabled == task {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Tasks.Enabled, task)
 }
 
 // GetTaskPriority returns the priority for a task (higher = more important).
