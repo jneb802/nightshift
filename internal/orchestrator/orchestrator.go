@@ -364,7 +364,7 @@ func (o *Orchestrator) review(ctx context.Context, task *tasks.Task, impl *Imple
 }
 
 // commit finalizes successful task completion.
-func (o *Orchestrator) commit(ctx context.Context, task *tasks.Task, impl *ImplementOutput, workDir string) error {
+func (o *Orchestrator) commit(_ context.Context, task *tasks.Task, impl *ImplementOutput, _ string) error {
 	// For now, commit is a no-op. In full implementation:
 	// - Create git commit with changes
 	// - Update task state
