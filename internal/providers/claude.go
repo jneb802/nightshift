@@ -177,7 +177,7 @@ func (c *Claude) GetWeeklyUsage() (int64, error) {
 
 	var total int64
 	now := time.Now()
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		date := now.AddDate(0, 0, -i).Format("2006-01-02")
 		if stat, ok := stats.DailyStats[date]; ok {
 			total += sumTokensByModel(stat.TokensByModel)
