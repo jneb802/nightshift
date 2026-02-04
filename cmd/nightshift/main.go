@@ -1,9 +1,8 @@
 // Package main is the CLI entry point for nightshift.
-// Uses cobra for command handling (to be added).
 package main
 
-import "fmt"
+import "github.com/marcusvorwaller/nightshift/cmd/nightshift/commands"
 
 func main() {
-	fmt.Println("nightshift - coming soon")
+	commands.Execute()
 }
