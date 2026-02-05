@@ -1027,6 +1027,118 @@ func TestCodexListTodaySessionFiles_NoDir(t *testing.T) {
 	}
 }
 
+func TestCodexGetWeeklyTokenUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+
+	// Create sessions across 3 days
+	for i := 0; i < 3; i++ {
+		date := now.AddDate(0, 0, -i)
+		dateDir := filepath.Join(
+			tmpDir, "sessions",
+			fmt.Sprintf("%04d", date.Year()),
+			fmt.Sprintf("%02d", int(date.Month())),
+			fmt.Sprintf("%02d", date.Day()),
+		)
+		if err := os.MkdirAll(dateDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		sessionPath := filepath.Join(dateDir, "session.jsonl")
+		content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexTokenCountJSON(1000, 800, 200, 50, int64(1250*(i+1))) + "\n"
+		if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.GetWeeklyTokenUsage()
+	if err != nil {
+		t.Fatalf("GetWeeklyTokenUsage error: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("expected non-nil weekly usage")
+	}
+
+	// 1250 + 2500 + 3750 = 7500
+	expectedTotal := int64(1250 + 2500 + 3750)
+	if usage.TotalTokens != expectedTotal {
+		t.Errorf("TotalTokens = %d, want %d", usage.TotalTokens, expectedTotal)
+	}
+}
+
+func TestCodexGetWeeklyTokenUsage_NoData(t *testing.T) {
+	provider := NewCodexWithPath(t.TempDir())
+	usage, err := provider.GetWeeklyTokenUsage()
+	if err != nil {
+		t.Fatalf("GetWeeklyTokenUsage error: %v", err)
+	}
+	if usage != nil {
+		t.Error("expected nil for no data")
+	}
+}
+
+func TestCodexGetTodayTokens(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionPath := filepath.Join(todayDir, "session.jsonl")
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexTokenCountJSON(5000, 4000, 1000, 200, 6200) + "\n"
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	tokens, err := provider.GetTodayTokens()
+	if err != nil {
+		t.Fatalf("GetTodayTokens error: %v", err)
+	}
+	if tokens != 6200 {
+		t.Errorf("GetTodayTokens = %d, want 6200", tokens)
+	}
+}
+
+func TestCodexGetWeeklyTokens(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionPath := filepath.Join(todayDir, "session.jsonl")
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexTokenCountJSON(5000, 4000, 1000, 200, 6200) + "\n"
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	tokens, err := provider.GetWeeklyTokens()
+	if err != nil {
+		t.Fatalf("GetWeeklyTokens error: %v", err)
+	}
+	if tokens != 6200 {
+		t.Errorf("GetWeeklyTokens = %d, want 6200", tokens)
+	}
+}
+
 func TestCodexParseSessionJSONL_LargeLines(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")

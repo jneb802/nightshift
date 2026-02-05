@@ -47,11 +47,15 @@ func (f fakeScraper) ScrapeCodexUsage(ctx context.Context) (tmux.UsageResult, er
 }
 
 type fakeCodex struct {
-	files []string
-	err   error
+	files        []string
+	dailyTokens  int64
+	weeklyTokens int64
+	err          error
 }
 
-func (f fakeCodex) ListSessionFiles() ([]string, error) { return f.files, f.err }
+func (f fakeCodex) ListSessionFiles() ([]string, error)  { return f.files, f.err }
+func (f fakeCodex) GetTodayTokens() (int64, error)       { return f.dailyTokens, f.err }
+func (f fakeCodex) GetWeeklyTokens() (int64, error)      { return f.weeklyTokens, f.err }
 
 func TestTakeSnapshotInsertsClaude(t *testing.T) {
 	home := t.TempDir()
@@ -99,7 +103,44 @@ func TestTakeSnapshotInsertsClaude(t *testing.T) {
 	}
 }
 
-func TestTakeSnapshotCodexSkipsInferredBudget(t *testing.T) {
+func TestTakeSnapshotCodexWithTokenData(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	codex := fakeCodex{weeklyTokens: 35000, dailyTokens: 5000}
+	collector := NewCollector(database, nil, codex, fakeScraper{codexPct: 42}, time.Monday)
+
+	snap, err := collector.TakeSnapshot(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("take snapshot: %v", err)
+	}
+
+	if snap.LocalTokens != 35000 {
+		t.Fatalf("local tokens = %d, want 35000", snap.LocalTokens)
+	}
+	if snap.LocalDaily != 5000 {
+		t.Fatalf("local daily = %d, want 5000", snap.LocalDaily)
+	}
+	if snap.ScrapedPct == nil || *snap.ScrapedPct != 42 {
+		t.Fatalf("scraped pct = %v, want 42", snap.ScrapedPct)
+	}
+	// With token data + scraped pct, inferred budget = 35000 / (42/100) ≈ 83333
+	if snap.InferredBudget == nil {
+		t.Fatalf("inferred budget = nil, want computed value")
+	}
+	if *snap.InferredBudget != 83333 {
+		t.Fatalf("inferred budget = %d, want 83333", *snap.InferredBudget)
+	}
+}
+
+func TestTakeSnapshotCodexNoTokenData(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -123,16 +164,31 @@ func TestTakeSnapshotCodexSkipsInferredBudget(t *testing.T) {
 	if snap.ScrapedPct == nil || *snap.ScrapedPct != 42 {
 		t.Fatalf("scraped pct = %v, want 42", snap.ScrapedPct)
 	}
-	// Codex has localWeekly=0, so inferred budget must be nil (not 0).
+	// No local tokens, so inferred budget must be nil
 	if snap.InferredBudget != nil {
-		t.Fatalf("inferred budget = %v, want nil (Codex has no local tokens)", snap.InferredBudget)
+		t.Fatalf("inferred budget = %v, want nil", snap.InferredBudget)
 	}
 }
 
-func TestCodexTokenTotalsReturnsZero(t *testing.T) {
-	// Codex session files don't contain raw token counts, only rate_limits
-	// with used_percent. codexTokenTotals always returns 0.
-	weekly, daily, err := codexTokenTotals(fakeCodex{files: []string{"/some/path.jsonl"}})
+func TestCodexTokenTotalsReturnsTokenData(t *testing.T) {
+	weekly, daily, err := codexTokenTotals(fakeCodex{
+		files:        []string{"/some/path.jsonl"},
+		weeklyTokens: 50000,
+		dailyTokens:  8000,
+	})
+	if err != nil {
+		t.Fatalf("codexTokenTotals: %v", err)
+	}
+	if weekly != 50000 {
+		t.Fatalf("weekly tokens = %d, want 50000", weekly)
+	}
+	if daily != 8000 {
+		t.Fatalf("daily tokens = %d, want 8000", daily)
+	}
+}
+
+func TestCodexTokenTotalsNoData(t *testing.T) {
+	weekly, daily, err := codexTokenTotals(fakeCodex{})
 	if err != nil {
 		t.Fatalf("codexTokenTotals: %v", err)
 	}

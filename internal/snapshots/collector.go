@@ -28,6 +28,8 @@ type ClaudeUsage interface {
 // CodexUsage defines local usage access for Codex.
 type CodexUsage interface {
 	ListSessionFiles() ([]string, error)
+	GetTodayTokens() (int64, error)
+	GetWeeklyTokens() (int64, error)
 }
 
 // Snapshot represents a stored usage snapshot.
@@ -151,9 +153,6 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 
 	var inferredBudget *int64
 	if scrapedPct != nil && *scrapedPct > 0 && localWeekly > 0 {
-		// Only infer budget from local tokens when they're available (Claude).
-		// Codex has localWeekly=0 structurally; its scraped_pct is used directly
-		// by the calibrator instead.
 		budget := int64(math.Round(float64(localWeekly) / (*scrapedPct / 100)))
 		inferredBudget = &budget
 	}
@@ -384,9 +383,15 @@ func nullString(value string) any {
 	return sql.NullString{String: value, Valid: true}
 }
 
-// codexTokenTotals returns 0 for both weekly and daily because Codex session
-// JSONL files don't store raw token counts. They only store rate_limits with
-// used_percent values. Token-level tracking for Codex relies on tmux scraping.
-func codexTokenTotals(_ CodexUsage) (int64, int64, error) {
-	return 0, 0, nil
+// codexTokenTotals returns weekly and daily token totals from Codex session files.
+func codexTokenTotals(codex CodexUsage) (int64, int64, error) {
+	weekly, err := codex.GetWeeklyTokens()
+	if err != nil {
+		weekly = 0
+	}
+	daily, err := codex.GetTodayTokens()
+	if err != nil {
+		daily = 0
+	}
+	return weekly, daily, nil
 }

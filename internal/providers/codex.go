@@ -441,6 +441,90 @@ func (c *Codex) ListTodaySessionFiles() ([]string, error) {
 	return files, nil
 }
 
+// GetTodayTokens returns total tokens used across all sessions today.
+// Satisfies the snapshots.CodexUsage interface.
+func (c *Codex) GetTodayTokens() (int64, error) {
+	usage, err := c.GetTodayTokenUsage()
+	if err != nil {
+		return 0, err
+	}
+	if usage == nil {
+		return 0, nil
+	}
+	return usage.TotalTokens, nil
+}
+
+// GetWeeklyTokens returns total tokens used across all sessions in the last 7 days.
+// Satisfies the snapshots.CodexUsage interface.
+func (c *Codex) GetWeeklyTokens() (int64, error) {
+	usage, err := c.GetWeeklyTokenUsage()
+	if err != nil {
+		return 0, err
+	}
+	if usage == nil {
+		return 0, nil
+	}
+	return usage.TotalTokens, nil
+}
+
+// ListSessionFilesForDate returns session files for a specific date.
+func (c *Codex) ListSessionFilesForDate(t time.Time) ([]string, error) {
+	dateDir := filepath.Join(
+		c.dataPath, "sessions",
+		fmt.Sprintf("%04d", t.Year()),
+		fmt.Sprintf("%02d", int(t.Month())),
+		fmt.Sprintf("%02d", t.Day()),
+	)
+
+	entries, err := os.ReadDir(dateDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading session dir: %w", err)
+	}
+
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			files = append(files, filepath.Join(dateDir, e.Name()))
+		}
+	}
+	return files, nil
+}
+
+// GetWeeklyTokenUsage sums token usage across all sessions from the last 7 days.
+func (c *Codex) GetWeeklyTokenUsage() (*CodexTokenUsage, error) {
+	now := time.Now()
+	var sum CodexTokenUsage
+	found := false
+
+	for i := 0; i < 7; i++ {
+		date := now.AddDate(0, 0, -i)
+		files, err := c.ListSessionFilesForDate(date)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			usage, err := c.ParseSessionTokenUsage(f)
+			if err != nil || usage == nil {
+				continue
+			}
+			found = true
+			sum.InputTokens += usage.InputTokens
+			sum.CachedInputTokens += usage.CachedInputTokens
+			sum.OutputTokens += usage.OutputTokens
+			sum.ReasoningOutputTokens += usage.ReasoningOutputTokens
+			sum.TotalTokens += usage.TotalTokens
+		}
+	}
+
+	if !found {
+		return nil, nil
+	}
+	return &sum, nil
+}
+
 // GetTodayTokenUsage sums token usage across ALL sessions for today's date.
 // Each session's cumulative total_token_usage is taken from the last
 // token_count event in that file (since total_token_usage is cumulative

@@ -162,6 +162,12 @@ func runBudgetSnapshot(cmd *cobra.Command, filterProvider string, localOnly bool
 			fmt.Printf("  Budget est:   %s tokens/week\n", formatTokens64(*snapshot.InferredBudget))
 		}
 
+		// Reset times
+		resetLine := formatResetLine(snapshot.SessionResetTime, snapshot.WeeklyResetTime)
+		if resetLine != "" {
+			fmt.Printf("  Resets:       %s\n", resetLine)
+		}
+
 		// Result
 		if snapshot.ScrapedPct != nil {
 			fmt.Printf("  Saved:        snapshot #%d\n", snapshot.ID)
@@ -222,12 +228,12 @@ func printSnapshotDataHints(snap snapshots.Snapshot, scraperEnabled bool) {
 				"Local tokens are 0. Claude Code writes usage to stats-cache.json",
 				"after each session. Use Claude Code to generate initial data.")
 		case "codex":
-			// Only hint if scraping also failed — if scraped_pct is available,
-			// Codex usage tracking works via scraping alone.
+			// Codex token data comes from session JSONL files.
+			// If no tokens and no scrape, suggest running Codex.
 			if snap.ScrapedPct == nil {
 				hints = append(hints,
-					"Codex doesn't store local token counts; usage relies on tmux scraping.",
-					"Enable calibrate_enabled and ensure tmux is installed.")
+					"No local tokens or scraped data for Codex.",
+					"Use Codex CLI to generate session data, and enable tmux scraping for budget %.")
 			}
 		}
 	}
@@ -251,9 +257,8 @@ func printSnapshotDataHints(snap snapshots.Snapshot, scraperEnabled bool) {
 		}
 	}
 
-	// For Claude, budget inference needs both scraped_pct and local tokens.
-	// For Codex, scraped_pct alone is sufficient (calibrator uses it directly).
-	if snap.ScrapedPct != nil && snap.LocalTokens == 0 && snap.Provider != "codex" {
+	// Budget inference needs both scraped_pct and local tokens.
+	if snap.ScrapedPct != nil && snap.LocalTokens == 0 {
 		hints = append(hints,
 			"Scraped a usage %, but local tokens are 0, so budget cannot be inferred.",
 			"Use the CLI to generate local token data first.")
@@ -361,7 +366,7 @@ func runBudgetCalibrate(filterProvider string) error {
 
 func printSnapshotTable(history []snapshots.Snapshot) {
 	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "Time\tLocal\tDaily\tPct\tInferred")
+	fmt.Fprintln(writer, "Time\tLocal\tDaily\tPct\tInferred\tResets")
 	for _, snapshot := range history {
 		pct := "-"
 		if snapshot.ScrapedPct != nil {
@@ -371,14 +376,19 @@ func printSnapshotTable(history []snapshots.Snapshot) {
 		if snapshot.InferredBudget != nil {
 			inferred = formatTokens64(*snapshot.InferredBudget)
 		}
+		resets := formatResetLine(snapshot.SessionResetTime, snapshot.WeeklyResetTime)
+		if resets == "" {
+			resets = "-"
+		}
 		fmt.Fprintf(
 			writer,
-			"%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\n",
 			snapshot.Timestamp.Format("Jan 02 15:04"),
 			formatTokens64(snapshot.LocalTokens),
 			formatTokens64(snapshot.LocalDaily),
 			pct,
 			inferred,
+			resets,
 		)
 	}
 	writer.Flush()
