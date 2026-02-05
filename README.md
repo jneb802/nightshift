@@ -40,6 +40,53 @@ nightshift run
 nightshift status
 ```
 
+## Common CLI Usage
+
+```bash
+# Preview next scheduled runs with prompt previews
+nightshift preview -n 3
+nightshift preview --long
+nightshift preview --write ./nightshift-prompts
+
+# Check environment and config health
+nightshift doctor
+
+# Launch the TUI
+nightshift tui
+
+# Budget status and calibration
+nightshift budget --provider claude
+nightshift budget snapshot --local-only
+nightshift budget history -n 10
+nightshift budget calibrate
+
+# Browse and inspect available tasks
+nightshift task list
+nightshift task list --category pr
+nightshift task list --cost low --json
+
+# Show task details and planning prompt
+nightshift task show lint-fix
+nightshift task show lint-fix --prompt-only
+
+# Run a task immediately
+nightshift task run lint-fix --provider claude
+nightshift task run lint-fix --provider codex --dry-run
+```
+
+Useful flags:
+- `nightshift run --dry-run` to simulate tasks without changes
+- `nightshift run --project <path>` to target a single repo
+- `nightshift run --task <task-type>` to run a specific task
+- `nightshift status --today` to see today’s activity summary
+- `nightshift daemon start --foreground` for debug
+- `--category` — filter tasks by category (pr, analysis, options, safe, map, emergency)
+- `--cost` — filter by cost tier (low, medium, high, veryhigh)
+- `--prompt-only` — output just the raw prompt text for piping
+- `--provider` — required for `task run`, choose claude or codex
+- `--dry-run` — preview the prompt without executing
+- `--timeout` — execution timeout (default 30m)
+
 ## Authentication (Subscriptions)
 
 Nightshift relies on the local Claude Code and Codex CLIs. If you have subscriptions, you can sign in via the CLIs without API keys.
@@ -67,6 +114,46 @@ Nightshift uses a YAML config file (`nightshift.yaml`) to define:
 - Schedule preferences
 
 See [SPEC.md](docs/SPEC.md) for detailed configuration options.
+
+Minimal example:
+
+```yaml
+schedule:
+  cron: "0 2 * * *"
+
+budget:
+  mode: daily
+  max_percent: 10
+  reserve_percent: 5
+  billing_mode: subscription
+  calibrate_enabled: true
+  snapshot_interval: 30m
+
+providers:
+  claude:
+    enabled: true
+    data_path: "~/.claude"
+  codex:
+    enabled: true
+    data_path: "~/.codex"
+
+projects:
+  - path: ~/code/sidecar
+  - path: ~/code/td
+```
+
+Task selection:
+
+```yaml
+tasks:
+  enabled:
+    - lint-fix
+    - docs-backfill
+    - bug-finder
+  priorities:
+    lint-fix: 1
+    bug-finder: 2
+```
 
 ## License
 
