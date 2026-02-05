@@ -38,6 +38,7 @@ func init() {
 	previewCmd.Flags().StringP("task", "t", "", "Preview only a specific task type")
 	previewCmd.Flags().Bool("long", false, "Show full prompts (default shows a truncated preview)")
 	previewCmd.Flags().String("write", "", "Write full prompts to a directory")
+	previewCmd.Flags().Bool("explain", false, "Show budget and task-filter explanations")
 	rootCmd.AddCommand(previewCmd)
 }
 
@@ -47,6 +48,7 @@ func runPreview(cmd *cobra.Command, args []string) error {
 	taskFilter, _ := cmd.Flags().GetString("task")
 	longPrompt, _ := cmd.Flags().GetBool("long")
 	writeDir, _ := cmd.Flags().GetString("write")
+	explain, _ := cmd.Flags().GetBool("explain")
 
 	if runs <= 0 {
 		return fmt.Errorf("runs must be positive")
@@ -68,10 +70,10 @@ func runPreview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve projects: %w", err)
 	}
 
-	return renderPreview(cmd.OutOrStdout(), cfg, database, projects, taskFilter, runs, longPrompt, writeDir)
+	return renderPreview(cmd.OutOrStdout(), cfg, database, projects, taskFilter, runs, longPrompt, writeDir, explain)
 }
 
-func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []string, taskFilter string, runs int, longPrompt bool, writeDir string) error {
+func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []string, taskFilter string, runs int, longPrompt bool, writeDir string, explain bool) error {
 	if runs <= 0 {
 		return fmt.Errorf("runs must be positive")
 	}
@@ -116,6 +118,12 @@ func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []
 
 	fmt.Fprintf(w, "Previewing next %d run(s). Assumes current state and usage; no tasks are executed.\n\n", runs)
 
+	if explain {
+		providers := collectProviderBudgets(cfg, budgetMgr)
+		printPreviewContext(w, cfg, provider, taskFilter, providers)
+		fmt.Fprintln(w)
+	}
+
 	for i, runAt := range nextRuns {
 		fmt.Fprintf(w, "Run %d: %s\n", i+1, runAt.Format("2006-01-02 15:04"))
 
@@ -141,11 +149,19 @@ func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []
 				continue
 			}
 			if len(selected) == 0 {
-				fmt.Fprintf(w, "  %s: no tasks available within budget\n", project)
+				if explain {
+					fmt.Fprintf(w, "  %s: no tasks available within budget\n", project)
+					printTaskFilterDiagnostics(w, cfg, st, project, taskFilter, allowance.Allowance)
+				} else {
+					fmt.Fprintf(w, "  %s: no tasks available within budget\n", project)
+				}
 				continue
 			}
 
 			fmt.Fprintf(w, "  %s:\n", project)
+			if explain {
+				printProjectBudget(w, cfg, allowance)
+			}
 			for idx, scored := range selected {
 				taskInstance := &tasks.Task{
 					ID:          fmt.Sprintf("%s:%s", scored.Definition.Type, project),
@@ -176,6 +192,169 @@ func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []
 
 	fmt.Fprintln(w, "Note: Only the plan prompt is deterministic. Implement/review prompts are generated after plan output.")
 	return nil
+}
+
+type providerBudgetSummary struct {
+	name      string
+	allowance *budget.AllowanceResult
+	err       error
+}
+
+func collectProviderBudgets(cfg *config.Config, budgetMgr *budget.Manager) []providerBudgetSummary {
+	var summaries []providerBudgetSummary
+	if cfg.Providers.Claude.Enabled {
+		allowance, err := budgetMgr.CalculateAllowance("claude")
+		summaries = append(summaries, providerBudgetSummary{
+			name:      "claude",
+			allowance: allowance,
+			err:       err,
+		})
+	}
+	if cfg.Providers.Codex.Enabled {
+		allowance, err := budgetMgr.CalculateAllowance("codex")
+		summaries = append(summaries, providerBudgetSummary{
+			name:      "codex",
+			allowance: allowance,
+			err:       err,
+		})
+	}
+	return summaries
+}
+
+func printPreviewContext(w io.Writer, cfg *config.Config, provider, taskFilter string, providers []providerBudgetSummary) {
+	mode := cfg.Budget.Mode
+	if mode == "" {
+		mode = config.DefaultBudgetMode
+	}
+	maxPercent := cfg.Budget.MaxPercent
+	if maxPercent <= 0 {
+		maxPercent = config.DefaultMaxPercent
+	}
+	reservePercent := cfg.Budget.ReservePercent
+	if reservePercent < 0 {
+		reservePercent = config.DefaultReservePercent
+	}
+
+	fmt.Fprintln(w, "Context:")
+	fmt.Fprintf(w, "  Provider: %s (preview picks first enabled: claude -> codex)\n", provider)
+	fmt.Fprintf(w, "  Budget mode: %s (max %d%%, reserve %d%%)\n", mode, maxPercent, reservePercent)
+	if len(providers) > 0 {
+		fmt.Fprintln(w, "  Provider budgets:")
+		for _, summary := range providers {
+			if summary.err != nil {
+				fmt.Fprintf(w, "    - %s: budget error: %v\n", summary.name, summary.err)
+				continue
+			}
+			fmt.Fprintf(w, "    - %s: %s available (%.1f%% used, weekly=%s, source=%s)\n",
+				summary.name,
+				formatTokens64(summary.allowance.Allowance),
+				summary.allowance.UsedPercent,
+				formatTokens64(summary.allowance.WeeklyBudget),
+				summary.allowance.BudgetSource)
+		}
+	}
+	if taskFilter != "" {
+		fmt.Fprintf(w, "  Task filter: %s\n", taskFilter)
+	} else {
+		enabled := cfg.Tasks.Enabled
+		if len(enabled) == 0 {
+			fmt.Fprintln(w, "  Task filter: all enabled tasks (none explicitly enabled)")
+		} else {
+			fmt.Fprintf(w, "  Task filter: enabled list (%d) [%s]\n", len(enabled), strings.Join(enabled, ", "))
+		}
+	}
+}
+
+func printProjectBudget(w io.Writer, cfg *config.Config, allowance *budget.AllowanceResult) {
+	if allowance == nil {
+		return
+	}
+	available := allowance.Allowance
+	fmt.Fprintf(w, "    Budget: %s available (%.1f%% used)\n", formatTokens64(available), allowance.UsedPercent)
+	fmt.Fprintf(w, "    Budget calc: weekly=%s, base=%s, reserve=%s, predicted=%s\n",
+		formatTokens64(allowance.WeeklyBudget),
+		formatTokens64(allowance.BudgetBase),
+		formatTokens64(allowance.ReserveAmount),
+		formatTokens64(allowance.PredictedUsage))
+	if allowance.Mode == "weekly" {
+		fmt.Fprintf(w, "    Budget window: %d day(s) remaining, multiplier %.2f\n", allowance.RemainingDays, allowance.Multiplier)
+	}
+	fmt.Fprintf(w, "    Budget source: %s (confidence=%s, samples=%d)\n",
+		allowance.BudgetSource, allowance.BudgetConfidence, allowance.BudgetSampleCount)
+	if len(cfg.Projects) > 1 {
+		fmt.Fprintf(w, "    Note: budget is not split per project during preview/run\n")
+	}
+}
+
+func printTaskFilterDiagnostics(w io.Writer, cfg *config.Config, st *state.State, project, taskFilter string, allowance int64) {
+	fmt.Fprintf(w, "    Diagnostics:\n")
+	if taskFilter != "" {
+		def, err := tasks.GetDefinition(tasks.TaskType(taskFilter))
+		if err != nil {
+			fmt.Fprintf(w, "      - Task filter unknown: %s\n", taskFilter)
+			return
+		}
+		minTok, maxTok := def.EstimatedTokens()
+		fmt.Fprintf(w, "      - Filtered to %s (%s), cost %s (%d-%d)\n",
+			def.Type, def.Name, def.CostTier, minTok, maxTok)
+		if int64(maxTok) > allowance {
+			fmt.Fprintf(w, "      - Budget too low for %s: need %d, have %d\n", def.Type, maxTok, allowance)
+		}
+		if !cfg.IsTaskEnabled(string(def.Type)) {
+			fmt.Fprintf(w, "      - Task disabled by config\n")
+		}
+		return
+	}
+
+	defs := tasks.AllDefinitions()
+	known := make(map[string]bool, len(defs))
+	for _, def := range defs {
+		known[string(def.Type)] = true
+	}
+	enabledCount := 0
+	disabledCount := 0
+	overBudgetCount := 0
+	assignedCount := 0
+	candidateCount := 0
+	for _, def := range defs {
+		if !cfg.IsTaskEnabled(string(def.Type)) {
+			disabledCount++
+			continue
+		}
+		enabledCount++
+		_, maxTok := def.EstimatedTokens()
+		if int64(maxTok) > allowance {
+			overBudgetCount++
+			continue
+		}
+		taskID := fmt.Sprintf("%s:%s", def.Type, project)
+		if st != nil && st.IsAssigned(taskID) {
+			assignedCount++
+			continue
+		}
+		candidateCount++
+	}
+
+	fmt.Fprintf(w, "      - Enabled tasks: %d (disabled: %d)\n", enabledCount, disabledCount)
+	fmt.Fprintf(w, "      - Over budget: %d (budget=%d)\n", overBudgetCount, allowance)
+	if assignedCount > 0 {
+		fmt.Fprintf(w, "      - Already assigned: %d\n", assignedCount)
+	}
+	fmt.Fprintf(w, "      - Candidates after filters: %d\n", candidateCount)
+	if len(cfg.Tasks.Enabled) > 0 {
+		var unknown []string
+		for _, taskName := range cfg.Tasks.Enabled {
+			if !known[taskName] {
+				unknown = append(unknown, taskName)
+			}
+		}
+		if len(unknown) > 0 {
+			fmt.Fprintf(w, "      - Unknown enabled task types: %s\n", strings.Join(unknown, ", "))
+		}
+	}
+	if enabledCount == 0 {
+		fmt.Fprintf(w, "      - No enabled tasks in config\n")
+	}
 }
 
 func previewProvider(cfg *config.Config) (string, error) {

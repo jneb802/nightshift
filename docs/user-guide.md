@@ -263,6 +263,9 @@ nightshift preview -n 3
 # Show full prompts
 nightshift preview --long
 
+# Show budget and task-filter explanations
+nightshift preview --explain
+
 # Write prompts to files
 nightshift preview --write ./nightshift-prompts
 ```

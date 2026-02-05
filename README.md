@@ -49,6 +49,7 @@ nightshift status
 # Preview next scheduled runs with prompt previews
 nightshift preview -n 3
 nightshift preview --long
+nightshift preview --explain
 nightshift preview --write ./nightshift-prompts
 
 # Guided global setup
