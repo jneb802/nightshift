@@ -34,10 +34,12 @@ func NewGitHubReader(cfg *config.Config) *GitHubReader {
 	return r
 }
 
+// Name returns the integration identifier.
 func (r *GitHubReader) Name() string {
 	return "github"
 }
 
+// Enabled reports whether GitHub issue integration is configured.
 func (r *GitHubReader) Enabled() bool {
 	return r.enabled
 }

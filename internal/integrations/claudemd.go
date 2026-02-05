@@ -23,10 +23,12 @@ func NewClaudeMDReader(cfg *config.Config) *ClaudeMDReader {
 	}
 }
 
+// Name returns the integration identifier.
 func (r *ClaudeMDReader) Name() string {
 	return "claude.md"
 }
 
+// Enabled reports whether claude.md integration is configured.
 func (r *ClaudeMDReader) Enabled() bool {
 	return r.enabled
 }

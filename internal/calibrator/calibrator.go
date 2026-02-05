@@ -1,3 +1,4 @@
+// Package calibrator tunes task budgets and scheduling based on historical usage data.
 package calibrator
 
 import (
