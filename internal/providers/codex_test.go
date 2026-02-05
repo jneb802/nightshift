@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -661,6 +662,330 @@ func TestCodexProvider_DataPath(t *testing.T) {
 	provider := NewCodexWithPath(path)
 	if provider.DataPath() != path {
 		t.Errorf("DataPath() = %q, want %q", provider.DataPath(), path)
+	}
+}
+
+// codexTokenCountJSON returns a Codex JSONL line with token_count info in the
+// real format: {"type":"event_msg","payload":{"type":"token_count","info":{...},"rate_limits":{...}}}.
+func codexTokenCountJSON(inputTokens, cachedInput, outputTokens, reasoningOutput, totalTokens int64) string {
+	return fmt.Sprintf(`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d,"total_tokens":%d},"last_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":20,"reasoning_output_tokens":0,"total_tokens":120}},"rate_limits":{"primary":{"used_percent":5.0,"window_minutes":300,"resets_at":1770283138}}}}`,
+		inputTokens, cachedInput, outputTokens, reasoningOutput, totalTokens)
+}
+
+// codexTokenCountNoInfoJSON returns a token_count event with info: null (early session event).
+func codexTokenCountNoInfoJSON() string {
+	return `{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":0.0,"window_minutes":300,"resets_at":1770264913}}}}`
+}
+
+func TestCodexParseSessionTokenUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+{"type":"response_item","payload":{"type":"message","role":"user"}}
+` + codexTokenCountJSON(1000, 800, 200, 50, 1250) + "\n" +
+		codexTokenCountJSON(2000, 1600, 400, 100, 2500) + "\n"
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.ParseSessionTokenUsage(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionTokenUsage error: %v", err)
+	}
+
+	if usage == nil {
+		t.Fatal("expected non-nil token usage")
+	}
+	// Should return the last token_count entry (cumulative)
+	if usage.InputTokens != 2000 {
+		t.Errorf("InputTokens = %d, want 2000", usage.InputTokens)
+	}
+	if usage.CachedInputTokens != 1600 {
+		t.Errorf("CachedInputTokens = %d, want 1600", usage.CachedInputTokens)
+	}
+	if usage.OutputTokens != 400 {
+		t.Errorf("OutputTokens = %d, want 400", usage.OutputTokens)
+	}
+	if usage.ReasoningOutputTokens != 100 {
+		t.Errorf("ReasoningOutputTokens = %d, want 100", usage.ReasoningOutputTokens)
+	}
+	if usage.TotalTokens != 2500 {
+		t.Errorf("TotalTokens = %d, want 2500", usage.TotalTokens)
+	}
+}
+
+func TestCodexParseSessionTokenUsage_NoData(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	// Stub session with no token data
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+{"type":"response_item","payload":{"type":"message","role":"user"}}
+`
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.ParseSessionTokenUsage(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionTokenUsage error: %v", err)
+	}
+	if usage != nil {
+		t.Error("expected nil token usage for stub session")
+	}
+}
+
+func TestCodexParseSessionTokenUsage_NullInfo(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	// Session with token_count events that have info: null
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexTokenCountNoInfoJSON() + "\n"
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.ParseSessionTokenUsage(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionTokenUsage error: %v", err)
+	}
+	if usage != nil {
+		t.Error("expected nil token usage when info is null")
+	}
+}
+
+func TestCodexFindMostRecentSessionWithData(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionsDir := filepath.Join(tmpDir, "sessions", "2026", "02", "04")
+
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create older session WITH token data
+	withData := filepath.Join(sessionsDir, "with-data.jsonl")
+	dataContent := `{"type":"session_meta","payload":{"id":"data-session"}}
+` + codexTokenCountJSON(5000, 4000, 1000, 200, 6200) + "\n"
+	if err := os.WriteFile(withData, []byte(dataContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pastTime := time.Now().Add(-time.Hour)
+	os.Chtimes(withData, pastTime, pastTime)
+
+	// Create newer stub session WITHOUT token data
+	stub := filepath.Join(sessionsDir, "stub.jsonl")
+	stubContent := `{"type":"session_meta","payload":{"id":"stub-session"}}
+{"type":"response_item","payload":{"type":"message","role":"user"}}
+`
+	if err := os.WriteFile(stub, []byte(stubContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+
+	// FindMostRecentSession returns the stub (newest by mtime)
+	recent, err := provider.FindMostRecentSession()
+	if err != nil {
+		t.Fatalf("FindMostRecentSession error: %v", err)
+	}
+	if recent != stub {
+		t.Errorf("FindMostRecentSession = %q, want stub %q", recent, stub)
+	}
+
+	// FindMostRecentSessionWithData should skip the stub and return the one with data
+	recentWithData, err := provider.FindMostRecentSessionWithData()
+	if err != nil {
+		t.Fatalf("FindMostRecentSessionWithData error: %v", err)
+	}
+	if recentWithData != withData {
+		t.Errorf("FindMostRecentSessionWithData = %q, want %q", recentWithData, withData)
+	}
+}
+
+func TestCodexFindMostRecentSessionWithData_NoSessions(t *testing.T) {
+	provider := NewCodexWithPath(t.TempDir())
+	recent, err := provider.FindMostRecentSessionWithData()
+	if err != nil {
+		t.Fatalf("FindMostRecentSessionWithData error: %v", err)
+	}
+	if recent != "" {
+		t.Errorf("expected empty string, got %q", recent)
+	}
+}
+
+func TestCodexFindMostRecentSessionWithData_AllStubs(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionsDir := filepath.Join(tmpDir, "sessions", "2026", "02", "04")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := filepath.Join(sessionsDir, "stub.jsonl")
+	if err := os.WriteFile(stub, []byte(`{"type":"session_meta","payload":{"id":"s1"}}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	recent, err := provider.FindMostRecentSessionWithData()
+	if err != nil {
+		t.Fatalf("FindMostRecentSessionWithData error: %v", err)
+	}
+	if recent != "" {
+		t.Errorf("expected empty string when all stubs, got %q", recent)
+	}
+}
+
+func TestCodexGetTodayTokenUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session 1: has token data
+	s1 := filepath.Join(todayDir, "session1.jsonl")
+	s1Content := `{"type":"session_meta","payload":{"id":"s1"}}
+` + codexTokenCountJSON(1000, 800, 200, 50, 1250) + "\n" +
+		codexTokenCountJSON(3000, 2400, 600, 150, 3750) + "\n"
+	if err := os.WriteFile(s1, []byte(s1Content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session 2: has token data
+	s2 := filepath.Join(todayDir, "session2.jsonl")
+	s2Content := `{"type":"session_meta","payload":{"id":"s2"}}
+` + codexTokenCountJSON(500, 400, 100, 25, 625) + "\n"
+	if err := os.WriteFile(s2, []byte(s2Content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session 3: stub, no token data
+	s3 := filepath.Join(todayDir, "session3.jsonl")
+	if err := os.WriteFile(s3, []byte(`{"type":"session_meta","payload":{"id":"s3"}}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.GetTodayTokenUsage()
+	if err != nil {
+		t.Fatalf("GetTodayTokenUsage error: %v", err)
+	}
+
+	if usage == nil {
+		t.Fatal("expected non-nil token usage")
+	}
+
+	// Session 1 final: 3000+600+150 = 3750; Session 2: 500+100+25 = 625; Session 3: 0
+	// Sum: InputTokens = 3000+500 = 3500
+	if usage.InputTokens != 3500 {
+		t.Errorf("InputTokens = %d, want 3500", usage.InputTokens)
+	}
+	if usage.CachedInputTokens != 2800 {
+		t.Errorf("CachedInputTokens = %d, want 2800", usage.CachedInputTokens)
+	}
+	if usage.OutputTokens != 700 {
+		t.Errorf("OutputTokens = %d, want 700", usage.OutputTokens)
+	}
+	if usage.ReasoningOutputTokens != 175 {
+		t.Errorf("ReasoningOutputTokens = %d, want 175", usage.ReasoningOutputTokens)
+	}
+	// TotalTokens = 3750 + 625 = 4375
+	if usage.TotalTokens != 4375 {
+		t.Errorf("TotalTokens = %d, want 4375", usage.TotalTokens)
+	}
+}
+
+func TestCodexGetTodayTokenUsage_NoSessions(t *testing.T) {
+	provider := NewCodexWithPath(t.TempDir())
+	usage, err := provider.GetTodayTokenUsage()
+	if err != nil {
+		t.Fatalf("GetTodayTokenUsage error: %v", err)
+	}
+	if usage != nil {
+		t.Error("expected nil token usage when no sessions")
+	}
+}
+
+func TestCodexGetTodayTokenUsage_AllStubs(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := filepath.Join(todayDir, "stub.jsonl")
+	if err := os.WriteFile(stub, []byte(`{"type":"session_meta","payload":{"id":"s1"}}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.GetTodayTokenUsage()
+	if err != nil {
+		t.Fatalf("GetTodayTokenUsage error: %v", err)
+	}
+	if usage != nil {
+		t.Error("expected nil token usage when all stubs")
+	}
+}
+
+func TestCodexListTodaySessionFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"a.jsonl", "b.jsonl", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(todayDir, name), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	files, err := provider.ListTodaySessionFiles()
+	if err != nil {
+		t.Fatalf("ListTodaySessionFiles error: %v", err)
+	}
+
+	if len(files) != 2 {
+		t.Errorf("expected 2 jsonl files, got %d", len(files))
+	}
+}
+
+func TestCodexListTodaySessionFiles_NoDir(t *testing.T) {
+	provider := NewCodexWithPath(t.TempDir())
+	files, err := provider.ListTodaySessionFiles()
+	if err != nil {
+		t.Fatalf("ListTodaySessionFiles error: %v", err)
+	}
+	if files != nil {
+		t.Errorf("expected nil for missing dir, got %v", files)
 	}
 }
 

@@ -28,10 +28,26 @@ type CodexRateLimit struct {
 	ResetsAt      int64   `json:"resets_at"` // Unix timestamp
 }
 
+// CodexTokenUsage represents token usage counters from a Codex session.
+type CodexTokenUsage struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}
+
+// CodexTokenCountInfo holds per-event and cumulative token usage.
+type CodexTokenCountInfo struct {
+	TotalTokenUsage *CodexTokenUsage `json:"total_token_usage"`
+	LastTokenUsage  *CodexTokenUsage `json:"last_token_usage"`
+}
+
 // CodexSessionPayload represents the payload object in a Codex JSONL entry.
 type CodexSessionPayload struct {
-	Type       string           `json:"type"`
-	RateLimits *CodexRateLimits `json:"rate_limits,omitempty"`
+	Type       string               `json:"type"`
+	Info       *CodexTokenCountInfo `json:"info,omitempty"`
+	RateLimits *CodexRateLimits     `json:"rate_limits,omitempty"`
 }
 
 // CodexSessionEntry represents a line in Codex session JSONL.
@@ -306,4 +322,154 @@ func (c *Codex) GetWindowMinutes(mode string) (int64, error) {
 func (c *Codex) RefreshRateLimits() (*CodexRateLimits, error) {
 	c.rateLimits = nil
 	return c.GetRateLimits()
+}
+
+// ParseSessionTokenUsage reads a Codex session JSONL file and extracts the
+// last total_token_usage from token_count events. Returns nil if no token
+// usage data is found (e.g. stub sessions that were started then exited).
+func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening codex session: %w", err)
+	}
+	defer file.Close()
+
+	var latest *CodexTokenUsage
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\r\n")
+			if len(line) > 0 {
+				var entry CodexSessionEntry
+				if jsonErr := json.Unmarshal(line, &entry); jsonErr == nil {
+					if entry.Payload != nil && entry.Payload.Type == "token_count" &&
+						entry.Payload.Info != nil && entry.Payload.Info.TotalTokenUsage != nil {
+						latest = entry.Payload.Info.TotalTokenUsage
+					}
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("reading codex session: %w", err)
+		}
+	}
+
+	return latest, nil
+}
+
+// FindMostRecentSessionWithData finds the most recent session file by
+// modification time that actually contains token_count events with data.
+// This avoids returning stub sessions (started then exited, no data).
+func (c *Codex) FindMostRecentSessionWithData() (string, error) {
+	sessions, err := c.ListSessionFiles()
+	if err != nil {
+		return "", err
+	}
+	if len(sessions) == 0 {
+		return "", nil
+	}
+
+	type fileInfo struct {
+		path    string
+		modTime time.Time
+	}
+	var files []fileInfo
+
+	for _, s := range sessions {
+		info, err := os.Stat(s)
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{path: s, modTime: info.ModTime()})
+	}
+
+	if len(files) == 0 {
+		return "", nil
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+
+	for _, f := range files {
+		usage, err := c.ParseSessionTokenUsage(f.path)
+		if err != nil {
+			continue
+		}
+		if usage != nil {
+			return f.path, nil
+		}
+	}
+
+	return "", nil
+}
+
+// ListTodaySessionFiles returns session files for today's date.
+// Codex stores sessions at sessions/YYYY/MM/DD/*.jsonl.
+func (c *Codex) ListTodaySessionFiles() ([]string, error) {
+	now := time.Now()
+	todayDir := filepath.Join(
+		c.dataPath, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+
+	entries, err := os.ReadDir(todayDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading today's session dir: %w", err)
+	}
+
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			files = append(files, filepath.Join(todayDir, e.Name()))
+		}
+	}
+	return files, nil
+}
+
+// GetTodayTokenUsage sums token usage across ALL sessions for today's date.
+// Each session's cumulative total_token_usage is taken from the last
+// token_count event in that file (since total_token_usage is cumulative
+// within a session, the last event gives the session total).
+func (c *Codex) GetTodayTokenUsage() (*CodexTokenUsage, error) {
+	files, err := c.ListTodaySessionFiles()
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+
+	var sum CodexTokenUsage
+	found := false
+
+	for _, f := range files {
+		usage, err := c.ParseSessionTokenUsage(f)
+		if err != nil {
+			continue
+		}
+		if usage == nil {
+			continue
+		}
+		found = true
+		sum.InputTokens += usage.InputTokens
+		sum.CachedInputTokens += usage.CachedInputTokens
+		sum.OutputTokens += usage.OutputTokens
+		sum.ReasoningOutputTokens += usage.ReasoningOutputTokens
+		sum.TotalTokens += usage.TotalTokens
+	}
+
+	if !found {
+		return nil, nil
+	}
+	return &sum, nil
 }
