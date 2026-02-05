@@ -50,6 +50,11 @@ func runPreview(cmd *cobra.Command, args []string) error {
 	writeDir, _ := cmd.Flags().GetString("write")
 	explain, _ := cmd.Flags().GetBool("explain")
 
+	sources, err := detectPreviewConfigSources(projectPath)
+	if err != nil {
+		return err
+	}
+
 	if runs <= 0 {
 		return fmt.Errorf("runs must be positive")
 	}
@@ -70,10 +75,46 @@ func runPreview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve projects: %w", err)
 	}
 
-	return renderPreview(cmd.OutOrStdout(), cfg, database, projects, taskFilter, runs, longPrompt, writeDir, explain)
+	return renderPreview(cmd.OutOrStdout(), cfg, database, projects, taskFilter, runs, longPrompt, writeDir, explain, sources)
 }
 
-func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []string, taskFilter string, runs int, longPrompt bool, writeDir string, explain bool) error {
+type previewConfigSources struct {
+	GlobalPath   string
+	GlobalExists bool
+	ProjectPath  string
+	ProjectExists bool
+}
+
+func detectPreviewConfigSources(projectPath string) (*previewConfigSources, error) {
+	globalPath := config.GlobalConfigPath()
+	globalExists := false
+	if _, err := os.Stat(globalPath); err == nil {
+		globalExists = true
+	}
+
+	base := projectPath
+	if base == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("get cwd: %w", err)
+		}
+		base = cwd
+	}
+	projectConfigPath := filepath.Join(base, config.ProjectConfigName)
+	projectExists := false
+	if _, err := os.Stat(projectConfigPath); err == nil {
+		projectExists = true
+	}
+
+	return &previewConfigSources{
+		GlobalPath:    globalPath,
+		GlobalExists:  globalExists,
+		ProjectPath:   projectConfigPath,
+		ProjectExists: projectExists,
+	}, nil
+}
+
+func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []string, taskFilter string, runs int, longPrompt bool, writeDir string, explain bool, sources *previewConfigSources) error {
 	if runs <= 0 {
 		return fmt.Errorf("runs must be positive")
 	}
@@ -120,7 +161,7 @@ func renderPreview(w io.Writer, cfg *config.Config, database *db.DB, projects []
 
 	if explain {
 		providers := collectProviderBudgets(cfg, budgetMgr)
-		printPreviewContext(w, cfg, provider, taskFilter, providers)
+		printPreviewContext(w, cfg, provider, taskFilter, providers, sources)
 		fmt.Fprintln(w)
 	}
 
@@ -223,7 +264,7 @@ func collectProviderBudgets(cfg *config.Config, budgetMgr *budget.Manager) []pro
 	return summaries
 }
 
-func printPreviewContext(w io.Writer, cfg *config.Config, provider, taskFilter string, providers []providerBudgetSummary) {
+func printPreviewContext(w io.Writer, cfg *config.Config, provider, taskFilter string, providers []providerBudgetSummary, sources *previewConfigSources) {
 	mode := cfg.Budget.Mode
 	if mode == "" {
 		mode = config.DefaultBudgetMode
@@ -240,6 +281,19 @@ func printPreviewContext(w io.Writer, cfg *config.Config, provider, taskFilter s
 	fmt.Fprintln(w, "Context:")
 	fmt.Fprintf(w, "  Provider: %s (preview picks first enabled: claude -> codex)\n", provider)
 	fmt.Fprintf(w, "  Budget mode: %s (max %d%%, reserve %d%%)\n", mode, maxPercent, reservePercent)
+	if sources != nil {
+		if sources.GlobalExists {
+			fmt.Fprintf(w, "  Config global: %s (loaded)\n", sources.GlobalPath)
+		} else {
+			fmt.Fprintf(w, "  Config global: %s (missing)\n", sources.GlobalPath)
+		}
+		if sources.ProjectExists {
+			fmt.Fprintf(w, "  Config project: %s (loaded)\n", sources.ProjectPath)
+		} else {
+			fmt.Fprintf(w, "  Config project: %s (missing)\n", sources.ProjectPath)
+		}
+		fmt.Fprintln(w, "  Config order: global -> project -> env overrides")
+	}
 	if len(providers) > 0 {
 		fmt.Fprintln(w, "  Provider budgets:")
 		for _, summary := range providers {

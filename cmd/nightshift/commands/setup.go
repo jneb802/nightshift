@@ -1073,7 +1073,7 @@ func buildPreviewOutput(cfg *config.Config, projects []string, runs int, longPro
 	defer database.Close()
 
 	var buf bytes.Buffer
-	if err := renderPreview(&buf, cfg, database, projects, "", runs, longPrompt, writeDir, false); err != nil {
+	if err := renderPreview(&buf, cfg, database, projects, "", runs, longPrompt, writeDir, false, nil); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
