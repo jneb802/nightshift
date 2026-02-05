@@ -297,14 +297,29 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 		}
 
 		if len(selectedTasks) == 0 {
-			fmt.Println("No tasks available within budget")
+			// Diagnose why no tasks were selected
+			skipReason := "no tasks available within budget"
+			allEnabled := p.selector.FilterEnabled(tasks.AllDefinitions())
+			inBudget := p.selector.FilterByBudget(allEnabled, choice.allowance.Allowance)
+			unassigned := p.selector.FilterUnassigned(inBudget, projectPath)
+			afterCooldown := p.selector.FilterByCooldown(unassigned, projectPath)
+			cooledDown := len(unassigned) - len(afterCooldown)
+
+			if cooledDown > 0 {
+				skipReason = fmt.Sprintf("%d task(s) on cooldown", cooledDown)
+				fmt.Printf("No tasks available (%d on cooldown, %d enabled, %d in budget)\n", cooledDown, len(allEnabled), len(inBudget))
+				p.log.Infof("tasks skipped: %d on cooldown out of %d eligible", cooledDown, len(unassigned))
+			} else {
+				fmt.Println("No tasks available within budget")
+			}
+
 			if p.report != nil {
 				p.report.addTask(reporting.TaskResult{
 					Project:    projectPath,
 					TaskType:   "",
 					Title:      "No tasks selected",
 					Status:     "skipped",
-					SkipReason: "no tasks available within budget",
+					SkipReason: skipReason,
 				})
 			}
 			continue

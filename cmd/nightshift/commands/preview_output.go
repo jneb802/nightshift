@@ -194,6 +194,7 @@ func renderDiagnosticsText(b *strings.Builder, styles previewStyles, diagnostics
 			b.WriteString("  - ")
 			b.WriteString(styles.Warn.Render(fmt.Sprintf("Task filter unknown: %s", diagnostics.FilteredTask.Type)))
 			b.WriteString("\n")
+			renderCooldownsText(b, styles, diagnostics.Cooldowns, indent)
 			return
 		}
 		b.WriteString(indent)
@@ -213,9 +214,11 @@ func renderDiagnosticsText(b *strings.Builder, styles previewStyles, diagnostics
 			b.WriteString(indent)
 			b.WriteString("  - Task disabled by config\n")
 		}
+		renderCooldownsText(b, styles, diagnostics.Cooldowns, indent)
 		return
 	}
 	if diagnostics.Aggregate == nil {
+		renderCooldownsText(b, styles, diagnostics.Cooldowns, indent)
 		return
 	}
 
@@ -228,6 +231,10 @@ func renderDiagnosticsText(b *strings.Builder, styles previewStyles, diagnostics
 		b.WriteString(indent)
 		b.WriteString(fmt.Sprintf("  - Already assigned: %d\n", agg.Assigned))
 	}
+	if agg.OnCooldown > 0 {
+		b.WriteString(indent)
+		b.WriteString(fmt.Sprintf("  - On cooldown: %d\n", agg.OnCooldown))
+	}
 	b.WriteString(indent)
 	b.WriteString(fmt.Sprintf("  - Candidates after filters: %d\n", agg.Candidates))
 	if len(agg.UnknownEnabled) > 0 {
@@ -237,6 +244,28 @@ func renderDiagnosticsText(b *strings.Builder, styles previewStyles, diagnostics
 	if agg.NoEnabledTasks {
 		b.WriteString(indent)
 		b.WriteString("  - No enabled tasks in config\n")
+	}
+	if agg.Candidates == 0 && agg.OnCooldown > 0 {
+		b.WriteString(indent)
+		b.WriteString("  - ")
+		b.WriteString(styles.Warn.Render("All available tasks are on cooldown"))
+		b.WriteString("\n")
+	}
+	renderCooldownsText(b, styles, diagnostics.Cooldowns, indent)
+}
+
+func renderCooldownsText(b *strings.Builder, styles previewStyles, cooldowns []previewCooldownEntry, indent string) {
+	if len(cooldowns) == 0 {
+		return
+	}
+	for _, cd := range cooldowns {
+		b.WriteString(indent)
+		label := "cooldown"
+		if cd.Simulated {
+			label = "simulated cooldown"
+		}
+		b.WriteString(fmt.Sprintf("  - %s (%s): %s, remaining %s (interval %s)\n",
+			cd.TaskName, cd.TaskType, label, cd.Remaining, cd.TotalInterval))
 	}
 }
 

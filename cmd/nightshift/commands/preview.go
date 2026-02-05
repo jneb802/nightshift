@@ -190,6 +190,7 @@ type previewTask struct {
 type previewDiagnostics struct {
 	FilteredTask *previewFilteredTaskDiagnostic `json:"filtered_task,omitempty"`
 	Aggregate    *previewAggregateDiagnostic    `json:"aggregate,omitempty"`
+	Cooldowns    []previewCooldownEntry         `json:"cooldowns,omitempty"`
 }
 
 type previewFilteredTaskDiagnostic struct {
@@ -209,10 +210,19 @@ type previewAggregateDiagnostic struct {
 	Disabled       int      `json:"disabled"`
 	OverBudget     int      `json:"over_budget"`
 	Assigned       int      `json:"assigned"`
+	OnCooldown     int      `json:"on_cooldown"`
 	Candidates     int      `json:"candidates"`
 	Budget         int64    `json:"budget"`
 	UnknownEnabled []string `json:"unknown_enabled,omitempty"`
 	NoEnabledTasks bool     `json:"no_enabled_tasks,omitempty"`
+}
+
+type previewCooldownEntry struct {
+	TaskType      string `json:"task_type"`
+	TaskName      string `json:"task_name"`
+	Remaining     string `json:"remaining"`
+	TotalInterval string `json:"total_interval"`
+	Simulated     bool   `json:"simulated,omitempty"`
 }
 
 func buildPreviewResult(cfg *config.Config, database *db.DB, projects []string, taskFilter string, runs int, writeDir string, sources *previewConfigSources, includeDiagnostics bool) (*previewResult, error) {
@@ -310,7 +320,7 @@ func buildPreviewResult(cfg *config.Config, database *db.DB, projects []string, 
 				projectResult.Status = previewProjectBudgetExhausted
 				projectResult.Detail = "budget exhausted"
 				if includeDiagnostics {
-					projectResult.Diagnostics = computePreviewDiagnostics(cfg, st, project, taskFilter, allowance.Allowance)
+					projectResult.Diagnostics = computePreviewDiagnostics(cfg, selector, project, taskFilter, allowance.Allowance)
 				}
 				run.Projects = append(run.Projects, projectResult)
 				continue
@@ -321,7 +331,7 @@ func buildPreviewResult(cfg *config.Config, database *db.DB, projects []string, 
 				projectResult.Status = previewProjectError
 				projectResult.Detail = err.Error()
 				if includeDiagnostics {
-					projectResult.Diagnostics = computePreviewDiagnostics(cfg, st, project, taskFilter, allowance.Allowance)
+					projectResult.Diagnostics = computePreviewDiagnostics(cfg, selector, project, taskFilter, allowance.Allowance)
 				}
 				run.Projects = append(run.Projects, projectResult)
 				continue
@@ -330,13 +340,16 @@ func buildPreviewResult(cfg *config.Config, database *db.DB, projects []string, 
 				projectResult.Status = previewProjectNoTasks
 				projectResult.Detail = "no tasks available within budget"
 				if includeDiagnostics {
-					projectResult.Diagnostics = computePreviewDiagnostics(cfg, st, project, taskFilter, allowance.Allowance)
+					projectResult.Diagnostics = computePreviewDiagnostics(cfg, selector, project, taskFilter, allowance.Allowance)
 				}
 				run.Projects = append(run.Projects, projectResult)
 				continue
 			}
 
 			projectResult.Status = previewProjectReady
+			if includeDiagnostics {
+				projectResult.Diagnostics = computePreviewDiagnostics(cfg, selector, project, taskFilter, allowance.Allowance)
+			}
 			projectResult.Tasks = make([]previewTask, 0, len(selected))
 			for idx, scored := range selected {
 				taskInstance := &tasks.Task{
@@ -372,6 +385,11 @@ func buildPreviewResult(cfg *config.Config, database *db.DB, projects []string, 
 				}
 
 				projectResult.Tasks = append(projectResult.Tasks, taskPreview)
+			}
+
+			// Simulate cooldown: mark selected tasks so subsequent runs pick different tasks
+			for _, scored := range selected {
+				selector.AddSimulatedCooldown(string(scored.Definition.Type), project)
 			}
 
 			run.Projects = append(run.Projects, projectResult)
@@ -410,7 +428,7 @@ func collectProviderBudgets(cfg *config.Config, budgetMgr *budget.Manager) []pro
 	return summaries
 }
 
-func computePreviewDiagnostics(cfg *config.Config, st *state.State, project, taskFilter string, allowance int64) *previewDiagnostics {
+func computePreviewDiagnostics(cfg *config.Config, selector *tasks.Selector, project, taskFilter string, allowance int64) *previewDiagnostics {
 	diagnostics := &previewDiagnostics{}
 	if taskFilter != "" {
 		def, err := tasks.GetDefinition(tasks.TaskType(taskFilter))
@@ -432,6 +450,23 @@ func computePreviewDiagnostics(cfg *config.Config, st *state.State, project, tas
 			BudgetTooLow: int64(maxTok) > allowance,
 			Disabled:     !cfg.IsTaskEnabled(string(def.Type)),
 		}
+		// Check cooldown for the filtered task
+		onCooldown, remaining, interval := selector.IsOnCooldown(tasks.TaskType(taskFilter), project)
+		simulated := selector.HasSimulatedCooldown(taskFilter, project)
+		if onCooldown || simulated {
+			entry := previewCooldownEntry{
+				TaskType:      taskFilter,
+				TaskName:      def.Name,
+				TotalInterval: formatCooldownDuration(interval),
+				Simulated:     simulated,
+			}
+			if onCooldown {
+				entry.Remaining = formatCooldownDuration(remaining)
+			} else {
+				entry.Remaining = "simulated"
+			}
+			diagnostics.Cooldowns = append(diagnostics.Cooldowns, entry)
+		}
 		return diagnostics
 	}
 
@@ -445,6 +480,7 @@ func computePreviewDiagnostics(cfg *config.Config, st *state.State, project, tas
 	disabledCount := 0
 	overBudgetCount := 0
 	assignedCount := 0
+	cooldownCount := 0
 	candidateCount := 0
 	for _, def := range defs {
 		if !cfg.IsTaskEnabled(string(def.Type)) {
@@ -458,8 +494,27 @@ func computePreviewDiagnostics(cfg *config.Config, st *state.State, project, tas
 			continue
 		}
 		taskID := fmt.Sprintf("%s:%s", def.Type, project)
-		if st != nil && st.IsAssigned(taskID) {
+		if selector.IsAssigned(taskID) {
 			assignedCount++
+			continue
+		}
+		// Check real cooldown and simulated cooldown
+		onCooldown, remaining, interval := selector.IsOnCooldown(def.Type, project)
+		simulated := selector.HasSimulatedCooldown(string(def.Type), project)
+		if onCooldown || simulated {
+			cooldownCount++
+			entry := previewCooldownEntry{
+				TaskType:      string(def.Type),
+				TaskName:      def.Name,
+				TotalInterval: formatCooldownDuration(interval),
+				Simulated:     simulated,
+			}
+			if onCooldown {
+				entry.Remaining = formatCooldownDuration(remaining)
+			} else {
+				entry.Remaining = "simulated"
+			}
+			diagnostics.Cooldowns = append(diagnostics.Cooldowns, entry)
 			continue
 		}
 		candidateCount++
@@ -479,6 +534,7 @@ func computePreviewDiagnostics(cfg *config.Config, st *state.State, project, tas
 		Disabled:       disabledCount,
 		OverBudget:     overBudgetCount,
 		Assigned:       assignedCount,
+		OnCooldown:     cooldownCount,
 		Candidates:     candidateCount,
 		Budget:         allowance,
 		UnknownEnabled: unknown,
@@ -535,4 +591,31 @@ func sanitizeFileName(value string) string {
 		b.WriteRune('-')
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+func formatCooldownDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	hours := int(d.Hours())
+	if hours >= 24 {
+		days := hours / 24
+		remaining := hours % 24
+		if remaining > 0 {
+			return fmt.Sprintf("%dd%dh", days, remaining)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+	if hours > 0 {
+		mins := int(d.Minutes()) % 60
+		if mins > 0 {
+			return fmt.Sprintf("%dh%dm", hours, mins)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+	mins := int(d.Minutes())
+	if mins > 0 {
+		return fmt.Sprintf("%dm", mins)
+	}
+	return fmt.Sprintf("%ds", int(d.Seconds()))
 }

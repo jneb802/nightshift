@@ -179,7 +179,12 @@ tasks:
   priorities:
     lint-fix: 1
     bug-finder: 2
+  intervals:
+    lint-fix: "24h"
+    docs-backfill: "168h"
 ```
+
+Each task has a default cooldown interval to prevent the same task from running too frequently on a project (e.g., 24h for lint-fix, 7d for docs-backfill). Override per-task with `tasks.intervals`.
 
 ## License
 

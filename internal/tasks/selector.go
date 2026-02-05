@@ -11,10 +11,11 @@ import (
 
 // Selector handles task selection based on priority scoring.
 type Selector struct {
-	cfg             *config.Config
-	state           *state.State
-	contextMentions map[string]bool // Tasks mentioned in claude.md/agents.md
-	taskSources     map[string]bool // Tasks from td/github issues
+	cfg                *config.Config
+	state              *state.State
+	contextMentions    map[string]bool    // Tasks mentioned in claude.md/agents.md
+	taskSources        map[string]bool    // Tasks from td/github issues
+	simulatedCooldowns map[string]bool    // task:project keys simulated as on cooldown (for preview)
 }
 
 // NewSelector creates a new task selector.
@@ -100,6 +101,14 @@ func (s *Selector) FilterByBudget(tasks []TaskDefinition, budget int64) []TaskDe
 	return filtered
 }
 
+// IsAssigned returns whether a task ID is currently assigned.
+func (s *Selector) IsAssigned(taskID string) bool {
+	if s.state == nil {
+		return false
+	}
+	return s.state.IsAssigned(taskID)
+}
+
 // FilterUnassigned returns tasks that are not currently assigned.
 func (s *Selector) FilterUnassigned(tasks []TaskDefinition, project string) []TaskDefinition {
 	filtered := make([]TaskDefinition, 0, len(tasks))
@@ -122,9 +131,17 @@ func (s *Selector) effectiveInterval(def TaskDefinition) time.Duration {
 
 // FilterByCooldown returns tasks whose cooldown period has elapsed.
 // Tasks that have never run or have no interval (<=0) are always included.
+// Also excludes tasks with simulated cooldowns (used by preview).
 func (s *Selector) FilterByCooldown(tasks []TaskDefinition, project string) []TaskDefinition {
 	filtered := make([]TaskDefinition, 0, len(tasks))
 	for _, t := range tasks {
+		// Check simulated cooldowns first (preview mode)
+		if s.simulatedCooldowns != nil {
+			key := makeTaskID(string(t.Type), project)
+			if s.simulatedCooldowns[key] {
+				continue
+			}
+		}
 		interval := s.effectiveInterval(t)
 		if interval <= 0 {
 			filtered = append(filtered, t)
@@ -136,6 +153,28 @@ func (s *Selector) FilterByCooldown(tasks []TaskDefinition, project string) []Ta
 		}
 	}
 	return filtered
+}
+
+// AddSimulatedCooldown marks a task+project as on cooldown for preview simulation.
+// Subsequent calls to FilterByCooldown will exclude this combination.
+func (s *Selector) AddSimulatedCooldown(taskType string, project string) {
+	if s.simulatedCooldowns == nil {
+		s.simulatedCooldowns = make(map[string]bool)
+	}
+	s.simulatedCooldowns[makeTaskID(taskType, project)] = true
+}
+
+// ClearSimulatedCooldowns removes all simulated cooldowns.
+func (s *Selector) ClearSimulatedCooldowns() {
+	s.simulatedCooldowns = nil
+}
+
+// HasSimulatedCooldown returns whether a task+project has a simulated cooldown.
+func (s *Selector) HasSimulatedCooldown(taskType string, project string) bool {
+	if s.simulatedCooldowns == nil {
+		return false
+	}
+	return s.simulatedCooldowns[makeTaskID(taskType, project)]
 }
 
 // IsOnCooldown returns whether a task is on cooldown for a project.

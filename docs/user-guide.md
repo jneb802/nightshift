@@ -153,6 +153,31 @@ tasks:
     - idea-generator
 ```
 
+### Task Cooldowns
+
+Tasks have a minimum interval between runs per project to avoid redundant work. Category defaults:
+
+| Category | Default Interval |
+|----------|-----------------|
+| PR | 7 days |
+| Analysis | 3 days |
+| Options | 7 days |
+| Safe | 14 days |
+| Map | 7 days |
+| Emergency | 30 days |
+
+Override intervals per task in your config with `tasks.intervals` using duration strings:
+
+```yaml
+tasks:
+  intervals:
+    lint-fix: "24h"
+    docs-backfill: "168h"
+    bug-finder: "72h"
+```
+
+Use `nightshift preview --explain` to see cooldown status, including which tasks are currently on cooldown and when they become eligible again. When all tasks for a project are on cooldown, the run is skipped with a diagnostic message.
+
 ### Budget Controls
 
 Budget controls apply globally unless overridden per provider.
