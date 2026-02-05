@@ -3,9 +3,11 @@ package providers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,10 +28,17 @@ type CodexRateLimit struct {
 	ResetsAt      int64   `json:"resets_at"` // Unix timestamp
 }
 
-// CodexSessionEntry represents a line in Codex session JSONL.
-type CodexSessionEntry struct {
+// CodexSessionPayload represents the payload object in a Codex JSONL entry.
+type CodexSessionPayload struct {
+	Type       string           `json:"type"`
 	RateLimits *CodexRateLimits `json:"rate_limits,omitempty"`
-	TokenCount *int64           `json:"token_count,omitempty"`
+}
+
+// CodexSessionEntry represents a line in Codex session JSONL.
+// Codex wraps data in {"type":"event_msg","payload":{"type":"token_count","rate_limits":{...}}}.
+type CodexSessionEntry struct {
+	Type    string               `json:"type"`
+	Payload *CodexSessionPayload `json:"payload,omitempty"`
 }
 
 // Codex wraps the Codex CLI as a provider.
@@ -87,28 +96,26 @@ func (c *Codex) ParseSessionJSONL(path string) (*CodexRateLimits, error) {
 	defer file.Close()
 
 	var latest *CodexRateLimits
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\r\n")
+			if len(line) > 0 {
+				var entry CodexSessionEntry
+				if jsonErr := json.Unmarshal(line, &entry); jsonErr == nil {
+					if entry.Payload != nil && entry.Payload.RateLimits != nil {
+						latest = entry.Payload.RateLimits
+					}
+				}
+			}
 		}
-
-		var entry CodexSessionEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue // skip malformed lines
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("reading codex session: %w", err)
 		}
-
-		if entry.RateLimits != nil {
-			latest = entry.RateLimits
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanning codex session: %w", err)
 	}
 
 	return latest, nil

@@ -165,7 +165,7 @@ func (s *Session) run(ctx context.Context, args ...string) ([]byte, error) {
 	return s.runner.Run(ctx, "tmux", args...)
 }
 
-var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var ansiRegexp = regexp.MustCompile(`\x1b(?:\[[0-9;]*[a-zA-Z]|\][^\x07]*\x07|[()][A-Z0-9])`)
 
 // StripANSI removes ANSI escape codes from text.
 func StripANSI(input string) string {

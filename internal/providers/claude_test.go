@@ -3,6 +3,7 @@ package providers
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,25 +13,15 @@ func TestParseStatsCache_Valid(t *testing.T) {
 	statsPath := filepath.Join(tmpDir, "stats-cache.json")
 
 	content := `{
-		"dailyStats": {
-			"2026-02-03": {
-				"messageCount": 42,
-				"sessionCount": 5,
-				"toolCallCount": 100,
-				"tokensByModel": {
-					"claude-opus-4-5-20251101": 150000,
-					"claude-sonnet-4-20250514": 50000
-				}
-			},
-			"2026-02-02": {
-				"messageCount": 30,
-				"sessionCount": 3,
-				"toolCallCount": 80,
-				"tokensByModel": {
-					"claude-opus-4-5-20251101": 100000
-				}
-			}
-		}
+		"version": 1,
+		"dailyActivity": [
+			{"date": "2026-02-03", "messageCount": 42, "sessionCount": 5, "toolCallCount": 100},
+			{"date": "2026-02-02", "messageCount": 30, "sessionCount": 3, "toolCallCount": 80}
+		],
+		"dailyModelTokens": [
+			{"date": "2026-02-03", "tokensByModel": {"claude-opus-4-5-20251101": 150000, "claude-sonnet-4-20250514": 50000}},
+			{"date": "2026-02-02", "tokensByModel": {"claude-opus-4-5-20251101": 100000}}
+		]
 	}`
 
 	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
@@ -42,24 +33,19 @@ func TestParseStatsCache_Valid(t *testing.T) {
 		t.Fatalf("ParseStatsCache error: %v", err)
 	}
 
-	if len(stats.DailyStats) != 2 {
-		t.Errorf("expected 2 daily stats, got %d", len(stats.DailyStats))
+	if len(stats.DailyModelTokens) != 2 {
+		t.Errorf("expected 2 dailyModelTokens entries, got %d", len(stats.DailyModelTokens))
+	}
+	if len(stats.DailyActivity) != 2 {
+		t.Errorf("expected 2 dailyActivity entries, got %d", len(stats.DailyActivity))
 	}
 
-	stat := stats.DailyStats["2026-02-03"]
-	if stat.MessageCount != 42 {
-		t.Errorf("MessageCount = %d, want 42", stat.MessageCount)
+	byDate := stats.TokensByDate()
+	if byDate["2026-02-03"] != 200000 {
+		t.Errorf("tokens for 2026-02-03 = %d, want 200000", byDate["2026-02-03"])
 	}
-	if stat.SessionCount != 5 {
-		t.Errorf("SessionCount = %d, want 5", stat.SessionCount)
-	}
-	if stat.ToolCallCount != 100 {
-		t.Errorf("ToolCallCount = %d, want 100", stat.ToolCallCount)
-	}
-
-	tokens := sumTokensByModel(stat.TokensByModel)
-	if tokens != 200000 {
-		t.Errorf("TotalTokens = %d, want 200000", tokens)
+	if byDate["2026-02-02"] != 100000 {
+		t.Errorf("tokens for 2026-02-02 = %d, want 100000", byDate["2026-02-02"])
 	}
 }
 
@@ -68,11 +54,11 @@ func TestParseStatsCache_NotExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error for missing file, got %v", err)
 	}
-	if stats.DailyStats == nil {
-		t.Error("expected initialized DailyStats map")
+	if len(stats.DailyModelTokens) != 0 {
+		t.Errorf("expected empty DailyModelTokens, got %d entries", len(stats.DailyModelTokens))
 	}
-	if len(stats.DailyStats) != 0 {
-		t.Errorf("expected empty DailyStats, got %d entries", len(stats.DailyStats))
+	if len(stats.DailyActivity) != 0 {
+		t.Errorf("expected empty DailyActivity, got %d entries", len(stats.DailyActivity))
 	}
 }
 
@@ -90,11 +76,80 @@ func TestParseStatsCache_Invalid(t *testing.T) {
 	}
 }
 
+func TestStatsCache_GetDailyStat(t *testing.T) {
+	stats := &StatsCache{
+		DailyActivity: []DailyActivity{
+			{Date: "2026-02-03", MessageCount: 42, SessionCount: 5, ToolCallCount: 100},
+		},
+		DailyModelTokens: []DailyModelTokens{
+			{Date: "2026-02-03", TokensByModel: map[string]int64{"opus": 150000, "sonnet": 50000}},
+		},
+	}
+
+	stat := stats.GetDailyStat("2026-02-03")
+	if stat == nil {
+		t.Fatal("expected non-nil stat for 2026-02-03")
+	}
+	if stat.MessageCount != 42 {
+		t.Errorf("MessageCount = %d, want 42", stat.MessageCount)
+	}
+	if stat.SessionCount != 5 {
+		t.Errorf("SessionCount = %d, want 5", stat.SessionCount)
+	}
+	if stat.ToolCallCount != 100 {
+		t.Errorf("ToolCallCount = %d, want 100", stat.ToolCallCount)
+	}
+	if len(stat.TokensByModel) != 2 {
+		t.Errorf("TokensByModel has %d entries, want 2", len(stat.TokensByModel))
+	}
+
+	// Non-existent date
+	stat = stats.GetDailyStat("2020-01-01")
+	if stat != nil {
+		t.Error("expected nil stat for non-existent date")
+	}
+}
+
+func TestStatsCache_GetDailyStat_ActivityOnly(t *testing.T) {
+	stats := &StatsCache{
+		DailyActivity: []DailyActivity{
+			{Date: "2026-02-03", MessageCount: 10, SessionCount: 2, ToolCallCount: 5},
+		},
+	}
+	stat := stats.GetDailyStat("2026-02-03")
+	if stat == nil {
+		t.Fatal("expected non-nil stat with activity only")
+	}
+	if stat.MessageCount != 10 {
+		t.Errorf("MessageCount = %d, want 10", stat.MessageCount)
+	}
+	if stat.TokensByModel != nil {
+		t.Errorf("expected nil TokensByModel, got %v", stat.TokensByModel)
+	}
+}
+
+func TestStatsCache_GetDailyStat_TokensOnly(t *testing.T) {
+	stats := &StatsCache{
+		DailyModelTokens: []DailyModelTokens{
+			{Date: "2026-02-03", TokensByModel: map[string]int64{"opus": 500}},
+		},
+	}
+	stat := stats.GetDailyStat("2026-02-03")
+	if stat == nil {
+		t.Fatal("expected non-nil stat with tokens only")
+	}
+	if stat.MessageCount != 0 {
+		t.Errorf("MessageCount = %d, want 0", stat.MessageCount)
+	}
+	if stat.TokensByModel["opus"] != 500 {
+		t.Errorf("opus tokens = %d, want 500", stat.TokensByModel["opus"])
+	}
+}
+
 func TestParseSessionJSONL(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
-	// Simulated session JSONL with multiple messages
 	content := `{"type":"user","content":"hello"}
 {"type":"assistant","content":"Hi!","usage":{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":20,"cacheCreationInputTokens":10}}
 {"type":"user","content":"how are you?"}
@@ -165,23 +220,42 @@ func TestParseSessionJSONL_NoUsage(t *testing.T) {
 	}
 }
 
+func TestParseSessionJSONL_LargeLines(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	// Write a line that exceeds 1MB (old scanner limit)
+	bigContent := strings.Repeat("x", 2*1024*1024)
+	content := `{"type":"assistant","content":"` + bigContent + `"}
+{"type":"assistant","content":"ok","usage":{"inputTokens":500,"outputTokens":100,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}
+`
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	usage, err := ParseSessionJSONL(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionJSONL error: %v", err)
+	}
+	if usage.InputTokens != 500 {
+		t.Errorf("InputTokens = %d, want 500", usage.InputTokens)
+	}
+	if usage.TotalTokens() != 600 {
+		t.Errorf("TotalTokens = %d, want 600", usage.TotalTokens())
+	}
+}
+
 func TestClaudeProvider_GetTodayUsage(t *testing.T) {
 	tmpDir := t.TempDir()
 	statsPath := filepath.Join(tmpDir, "stats-cache.json")
 
 	today := time.Now().Format("2006-01-02")
 	content := `{
-		"dailyStats": {
-			"` + today + `": {
-				"messageCount": 10,
-				"sessionCount": 2,
-				"toolCallCount": 25,
-				"tokensByModel": {
-					"claude-opus-4": 75000,
-					"claude-sonnet-4": 25000
-				}
-			}
-		}
+		"version": 1,
+		"dailyModelTokens": [
+			{"date": "` + today + `", "tokensByModel": {"claude-opus-4": 75000, "claude-sonnet-4": 25000}}
+		]
 	}`
 
 	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
@@ -220,15 +294,16 @@ func TestClaudeProvider_GetWeeklyUsage(t *testing.T) {
 	today := now.Format("2006-01-02")
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	twoDaysAgo := now.AddDate(0, 0, -2).Format("2006-01-02")
-	eightDaysAgo := now.AddDate(0, 0, -8).Format("2006-01-02") // Outside window
+	eightDaysAgo := now.AddDate(0, 0, -8).Format("2006-01-02")
 
 	content := `{
-		"dailyStats": {
-			"` + today + `": {"tokensByModel": {"model": 100000}},
-			"` + yesterday + `": {"tokensByModel": {"model": 80000}},
-			"` + twoDaysAgo + `": {"tokensByModel": {"model": 60000}},
-			"` + eightDaysAgo + `": {"tokensByModel": {"model": 999999}}
-		}
+		"version": 1,
+		"dailyModelTokens": [
+			{"date": "` + today + `", "tokensByModel": {"model": 100000}},
+			{"date": "` + yesterday + `", "tokensByModel": {"model": 80000}},
+			{"date": "` + twoDaysAgo + `", "tokensByModel": {"model": 60000}},
+			{"date": "` + eightDaysAgo + `", "tokensByModel": {"model": 999999}}
+		]
 	}`
 
 	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
@@ -254,9 +329,10 @@ func TestClaudeProvider_GetUsedPercent_Daily(t *testing.T) {
 
 	today := time.Now().Format("2006-01-02")
 	content := `{
-		"dailyStats": {
-			"` + today + `": {"tokensByModel": {"model": 50000}}
-		}
+		"version": 1,
+		"dailyModelTokens": [
+			{"date": "` + today + `", "tokensByModel": {"model": 50000}}
+		]
 	}`
 
 	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
@@ -286,10 +362,11 @@ func TestClaudeProvider_GetUsedPercent_Weekly(t *testing.T) {
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 
 	content := `{
-		"dailyStats": {
-			"` + today + `": {"tokensByModel": {"model": 100000}},
-			"` + yesterday + `": {"tokensByModel": {"model": 100000}}
-		}
+		"version": 1,
+		"dailyModelTokens": [
+			{"date": "` + today + `", "tokensByModel": {"model": 100000}},
+			{"date": "` + yesterday + `", "tokensByModel": {"model": 100000}}
+		]
 	}`
 
 	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
@@ -334,14 +411,13 @@ func TestClaudeProvider_GetDailyStats(t *testing.T) {
 	statsPath := filepath.Join(tmpDir, "stats-cache.json")
 
 	content := `{
-		"dailyStats": {
-			"2026-02-03": {
-				"messageCount": 42,
-				"sessionCount": 5,
-				"toolCallCount": 100,
-				"tokensByModel": {"model": 200000}
-			}
-		}
+		"version": 1,
+		"dailyActivity": [
+			{"date": "2026-02-03", "messageCount": 42, "sessionCount": 5, "toolCallCount": 100}
+		],
+		"dailyModelTokens": [
+			{"date": "2026-02-03", "tokensByModel": {"model": 200000}}
+		]
 	}`
 
 	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
@@ -359,6 +435,9 @@ func TestClaudeProvider_GetDailyStats(t *testing.T) {
 	}
 	if stat.MessageCount != 42 {
 		t.Errorf("MessageCount = %d, want 42", stat.MessageCount)
+	}
+	if stat.TokensByModel["model"] != 200000 {
+		t.Errorf("tokens = %d, want 200000", stat.TokensByModel["model"])
 	}
 
 	// Non-existent date
@@ -379,7 +458,6 @@ func TestClaudeProvider_ListSessionFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create some session files
 	sessions := []string{
 		filepath.Join(projectsDir, "session1.jsonl"),
 		filepath.Join(projectsDir, "session2.jsonl"),

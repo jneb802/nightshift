@@ -38,13 +38,13 @@ type Scheduler struct {
 	location *time.Location
 
 	// Runtime state
-	cron     *cron.Cron
-	jobs     []Job
-	running  bool
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	nextRun  time.Time
-	entryID  cron.EntryID
+	cron    *cron.Cron
+	jobs    []Job
+	running bool
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	nextRun time.Time
+	entryID cron.EntryID
 }
 
 // Window represents a time window constraint.
@@ -305,6 +305,57 @@ func (s *Scheduler) NextRun() time.Time {
 	return s.nextRun
 }
 
+// NextRuns returns the next N scheduled run times without starting the scheduler.
+func (s *Scheduler) NextRuns(n int) ([]time.Time, error) {
+	if n <= 0 {
+		return []time.Time{}, nil
+	}
+
+	s.mu.RLock()
+	cronExpr := s.cronExpr
+	interval := s.interval
+	window := s.window
+	location := s.location
+	s.mu.RUnlock()
+
+	if cronExpr == "" && interval == 0 {
+		return nil, ErrNoSchedule
+	}
+
+	now := time.Now().In(location)
+	runs := make([]time.Time, 0, n)
+
+	if cronExpr != "" {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		schedule, err := parser.Parse(cronExpr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCron, err)
+		}
+		current := now
+		for i := 0; i < n; i++ {
+			next := schedule.Next(current)
+			if window != nil && !window.Contains(next) {
+				next = nextWindowStartForWindow(window, next)
+			}
+			runs = append(runs, next)
+			current = next
+		}
+		return runs, nil
+	}
+
+	current := now
+	for i := 0; i < n; i++ {
+		next := current.Add(interval)
+		if window != nil && !window.Contains(next) {
+			next = nextWindowStartForWindow(window, next)
+		}
+		runs = append(runs, next)
+		current = next
+	}
+
+	return runs, nil
+}
+
 // updateNextRun calculates and stores the next run time.
 func (s *Scheduler) updateNextRun() {
 	s.mu.Lock()
@@ -378,8 +429,16 @@ func (s *Scheduler) nextWindowStartLocked(t time.Time) time.Time {
 		return t
 	}
 
-	t = t.In(s.window.Location)
-	today := time.Date(t.Year(), t.Month(), t.Day(), s.window.Start.Hour, s.window.Start.Minute, 0, 0, s.window.Location)
+	return nextWindowStartForWindow(s.window, t)
+}
+
+func nextWindowStartForWindow(window *Window, t time.Time) time.Time {
+	if window == nil {
+		return t
+	}
+
+	t = t.In(window.Location)
+	today := time.Date(t.Year(), t.Month(), t.Day(), window.Start.Hour, window.Start.Minute, 0, 0, window.Location)
 
 	// If window start has passed today, use tomorrow
 	if t.After(today) || t.Equal(today) {

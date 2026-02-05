@@ -3,21 +3,38 @@ package providers
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// codexRateLimitsJSON returns a Codex JSONL line with rate_limits in the real
+// nested format: {"type":"event_msg","payload":{"type":"token_count","rate_limits":{...}}}.
+func codexRateLimitsJSON(primary, secondary string) string {
+	parts := []string{}
+	if primary != "" {
+		parts = append(parts, `"primary":`+primary)
+	}
+	if secondary != "" {
+		parts = append(parts, `"secondary":`+secondary)
+	}
+	return `{"type":"event_msg","payload":{"type":"token_count","rate_limits":{` + strings.Join(parts, ",") + `}}}`
+}
 
 func TestCodexParseSessionJSONL_WithRateLimits(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
-	// Simulated Codex session JSONL with rate_limits
-	content := `{"type":"user","content":"hello"}
-{"type":"assistant","content":"Hi!"}
-{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}
-{"type":"user","content":"another message"}
-{"rate_limits":{"primary":{"used_percent":45.5,"window_minutes":300,"resets_at":1769896400},"secondary":{"used_percent":12.5,"window_minutes":10080,"resets_at":1770483200}}}
-`
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+{"type":"response_item","payload":{"type":"message","role":"user"}}
+` + codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	) + "\n" + `{"type":"response_item","payload":{"type":"message","role":"user"}}
+` + codexRateLimitsJSON(
+		`{"used_percent":45.5,"window_minutes":300,"resets_at":1769896400}`,
+		`{"used_percent":12.5,"window_minutes":10080,"resets_at":1770483200}`,
+	) + "\n"
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -59,8 +76,8 @@ func TestCodexParseSessionJSONL_NoRateLimits(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
-	content := `{"type":"user","content":"hello"}
-{"type":"assistant","content":"Hi!"}
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+{"type":"response_item","payload":{"type":"message","role":"user"}}
 `
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
@@ -102,8 +119,10 @@ func TestCodexParseSessionJSONL_MalformedLines(t *testing.T) {
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
 	content := `invalid json line
-{"rate_limits":{"primary":{"used_percent":20.0,"window_minutes":300,"resets_at":1769896359}}}
-more invalid json
+` + codexRateLimitsJSON(
+		`{"used_percent":20.0,"window_minutes":300,"resets_at":1769896359}`,
+		"",
+	) + "\n" + `more invalid json
 `
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
@@ -132,7 +151,6 @@ func TestCodexListSessionFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create session files
 	sessions := []string{
 		filepath.Join(sessionsDir, "session1.jsonl"),
 		filepath.Join(sessionsDir, "session2.jsonl"),
@@ -178,18 +196,15 @@ func TestCodexFindMostRecentSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create sessions with different modification times
 	older := filepath.Join(sessionsDir, "older.jsonl")
 	newer := filepath.Join(sessionsDir, "newer.jsonl")
 
 	if err := os.WriteFile(older, []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Set older file to past time
 	pastTime := time.Now().Add(-time.Hour)
 	os.Chtimes(older, pastTime, pastTime)
 
-	// Create newer file
 	if err := os.WriteFile(newer, []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +240,10 @@ func TestCodexGetRateLimits(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -265,7 +283,10 @@ func TestCodexGetUsedPercent_Daily(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -291,7 +312,10 @@ func TestCodexGetUsedPercent_Weekly(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -317,7 +341,10 @@ func TestCodexGetUsedPercent_InvalidMode(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -350,7 +377,10 @@ func TestCodexGetPrimaryUsedPercent(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":45.5,"window_minutes":300,"resets_at":1769896359}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":45.5,"window_minutes":300,"resets_at":1769896359}`,
+		"",
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -376,7 +406,10 @@ func TestCodexGetSecondaryUsedPercent(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"secondary":{"used_percent":15.5,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		"",
+		`{"used_percent":15.5,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -402,7 +435,10 @@ func TestCodexGetResetTime_Daily(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -429,7 +465,10 @@ func TestCodexGetResetTime_Weekly(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -456,7 +495,10 @@ func TestCodexGetResetTime_InvalidMode(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		"",
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -489,7 +531,10 @@ func TestCodexGetWindowMinutes(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359},"secondary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -523,7 +568,10 @@ func TestCodexGetWindowMinutes_InvalidMode(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		"",
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -545,7 +593,10 @@ func TestCodexRefreshRateLimits(t *testing.T) {
 	}
 
 	sessionPath := filepath.Join(sessionsDir, "session.jsonl")
-	content := `{"rate_limits":{"primary":{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}}}`
+	content := codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		"",
+	)
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -563,7 +614,10 @@ func TestCodexRefreshRateLimits(t *testing.T) {
 	}
 
 	// Update file
-	newContent := `{"rate_limits":{"primary":{"used_percent":50.0,"window_minutes":300,"resets_at":1769896400}}}`
+	newContent := codexRateLimitsJSON(
+		`{"used_percent":50.0,"window_minutes":300,"resets_at":1769896400}`,
+		"",
+	)
 	if err := os.WriteFile(sessionPath, []byte(newContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -607,5 +661,36 @@ func TestCodexProvider_DataPath(t *testing.T) {
 	provider := NewCodexWithPath(path)
 	if provider.DataPath() != path {
 		t.Errorf("DataPath() = %q, want %q", provider.DataPath(), path)
+	}
+}
+
+func TestCodexParseSessionJSONL_LargeLines(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	// Create a file with a line exceeding the old 1MB scanner limit
+	bigContent := strings.Repeat("x", 2*1024*1024)
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+{"type":"response_item","payload":{"type":"message","content":"` + bigContent + `"}}
+` + codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	) + "\n"
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	limits, err := provider.ParseSessionJSONL(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionJSONL with large line: %v", err)
+	}
+
+	if limits == nil {
+		t.Fatal("expected non-nil rate limits despite large line")
+	}
+	if limits.Primary.UsedPercent != 34.0 {
+		t.Errorf("Primary.UsedPercent = %.1f, want 34.0", limits.Primary.UsedPercent)
 	}
 }

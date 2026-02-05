@@ -71,9 +71,9 @@ type ReviewOutput struct {
 
 // LogEntry captures a timestamped log message.
 type LogEntry struct {
-	Time    time.Time `json:"time"`
-	Level   string    `json:"level"`
-	Message string    `json:"message"`
+	Time    time.Time      `json:"time"`
+	Level   string         `json:"level"`
+	Message string         `json:"message"`
 	Fields  map[string]any `json:"fields,omitempty"`
 }
 
@@ -409,6 +409,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 }
 
 // Prompt builders
+
+// PlanPrompt returns the planning prompt for a task.
+func (o *Orchestrator) PlanPrompt(task *tasks.Task) string {
+	return o.buildPlanPrompt(task)
+}
 
 func (o *Orchestrator) buildPlanPrompt(task *tasks.Task) string {
 	return fmt.Sprintf(`You are a planning agent. Create a detailed execution plan for this task.

@@ -3,9 +3,11 @@ package providers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,16 +15,35 @@ import (
 )
 
 // StatsCache represents the stats-cache.json structure from Claude Code.
+// The file uses two arrays: dailyActivity (message/session/tool counts)
+// and dailyModelTokens (per-model token counts keyed by date).
 type StatsCache struct {
-	DailyStats map[string]DailyStat `json:"dailyStats"` // Key is date "YYYY-MM-DD"
+	Version          int                `json:"version"`
+	DailyActivity    []DailyActivity    `json:"dailyActivity"`
+	DailyModelTokens []DailyModelTokens `json:"dailyModelTokens"`
 }
 
-// DailyStat holds daily usage aggregates.
+// DailyActivity holds per-day message/session/tool counts.
+type DailyActivity struct {
+	Date          string `json:"date"` // "YYYY-MM-DD"
+	MessageCount  int64  `json:"messageCount"`
+	SessionCount  int64  `json:"sessionCount"`
+	ToolCallCount int64  `json:"toolCallCount"`
+}
+
+// DailyModelTokens holds per-day token counts by model.
+type DailyModelTokens struct {
+	Date          string           `json:"date"`          // "YYYY-MM-DD"
+	TokensByModel map[string]int64 `json:"tokensByModel"` // model name -> token count
+}
+
+// DailyStat is a convenience view combining activity and tokens for a date.
 type DailyStat struct {
-	MessageCount  int64             `json:"messageCount"`
-	SessionCount  int64             `json:"sessionCount"`
-	ToolCallCount int64             `json:"toolCallCount"`
-	TokensByModel map[string]int64  `json:"tokensByModel"` // Model name -> token count
+	Date          string
+	MessageCount  int64
+	SessionCount  int64
+	ToolCallCount int64
+	TokensByModel map[string]int64
 }
 
 // SessionMessage represents a single message in a session JSONL file.
@@ -94,7 +115,7 @@ func ParseStatsCache(path string) (*StatsCache, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &StatsCache{DailyStats: make(map[string]DailyStat)}, nil
+			return &StatsCache{}, nil
 		}
 		return nil, fmt.Errorf("reading stats-cache: %w", err)
 	}
@@ -104,11 +125,45 @@ func ParseStatsCache(path string) (*StatsCache, error) {
 		return nil, fmt.Errorf("parsing stats-cache: %w", err)
 	}
 
-	if stats.DailyStats == nil {
-		stats.DailyStats = make(map[string]DailyStat)
+	return &stats, nil
+}
+
+// TokensByDate returns a map of date -> total tokens across all models.
+func (s *StatsCache) TokensByDate() map[string]int64 {
+	m := make(map[string]int64, len(s.DailyModelTokens))
+	for _, entry := range s.DailyModelTokens {
+		m[entry.Date] = sumTokensByModel(entry.TokensByModel)
+	}
+	return m
+}
+
+// GetDailyStat builds a combined DailyStat for a given date.
+func (s *StatsCache) GetDailyStat(date string) *DailyStat {
+	stat := &DailyStat{Date: date}
+	found := false
+
+	for _, a := range s.DailyActivity {
+		if a.Date == date {
+			stat.MessageCount = a.MessageCount
+			stat.SessionCount = a.SessionCount
+			stat.ToolCallCount = a.ToolCallCount
+			found = true
+			break
+		}
 	}
 
-	return &stats, nil
+	for _, t := range s.DailyModelTokens {
+		if t.Date == date {
+			stat.TokensByModel = t.TokensByModel
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return nil
+	}
+	return stat
 }
 
 // ParseSessionJSONL reads a session JSONL file and returns token usage.
@@ -120,33 +175,27 @@ func ParseSessionJSONL(path string) (*TokenUsage, error) {
 	defer file.Close()
 
 	total := &TokenUsage{}
-	scanner := bufio.NewScanner(file)
-	// Handle large lines (some messages can be very long)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\r\n")
+			if len(line) > 0 {
+				var msg SessionMessage
+				if jsonErr := json.Unmarshal(line, &msg); jsonErr == nil && msg.Usage != nil {
+					total.InputTokens += msg.Usage.InputTokens
+					total.OutputTokens += msg.Usage.OutputTokens
+					total.CacheReadInputTokens += msg.Usage.CacheReadInputTokens
+					total.CacheCreationInputTokens += msg.Usage.CacheCreationInputTokens
+				}
+			}
 		}
-
-		var msg SessionMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			// Skip malformed lines
-			continue
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("reading session file: %w", err)
 		}
-
-		if msg.Usage != nil {
-			total.InputTokens += msg.Usage.InputTokens
-			total.OutputTokens += msg.Usage.OutputTokens
-			total.CacheReadInputTokens += msg.Usage.CacheReadInputTokens
-			total.CacheCreationInputTokens += msg.Usage.CacheCreationInputTokens
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanning session file: %w", err)
 	}
 
 	return total, nil
@@ -161,8 +210,9 @@ func (c *Claude) GetTodayUsage() (int64, error) {
 	c.statsCache = stats
 
 	today := time.Now().Format("2006-01-02")
-	if stat, ok := stats.DailyStats[today]; ok {
-		return sumTokensByModel(stat.TokensByModel), nil
+	byDate := stats.TokensByDate()
+	if tokens, ok := byDate[today]; ok {
+		return tokens, nil
 	}
 	return 0, nil
 }
@@ -175,13 +225,12 @@ func (c *Claude) GetWeeklyUsage() (int64, error) {
 	}
 	c.statsCache = stats
 
+	byDate := stats.TokensByDate()
 	var total int64
 	now := time.Now()
 	for i := range 7 {
 		date := now.AddDate(0, 0, -i).Format("2006-01-02")
-		if stat, ok := stats.DailyStats[date]; ok {
-			total += sumTokensByModel(stat.TokensByModel)
-		}
+		total += byDate[date]
 	}
 	return total, nil
 }
@@ -225,10 +274,7 @@ func (c *Claude) GetDailyStats(date string) (*DailyStat, error) {
 		return nil, err
 	}
 
-	if stat, ok := stats.DailyStats[date]; ok {
-		return &stat, nil
-	}
-	return nil, nil
+	return stats.GetDailyStat(date), nil
 }
 
 // ListSessionFiles finds all session JSONL files under the projects directory.

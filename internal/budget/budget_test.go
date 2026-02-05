@@ -562,6 +562,39 @@ func TestSummary(t *testing.T) {
 	}
 }
 
+func TestCalculateAllowance_Codex(t *testing.T) {
+	cfg := &config.Config{
+		Budget: config.BudgetConfig{
+			Mode:           "daily",
+			WeeklyTokens:   700000,
+			MaxPercent:     10,
+			ReservePercent: 0,
+			PerProvider:    map[string]int{"codex": 500000},
+		},
+	}
+
+	codex := &mockCodexProvider{usedPercent: 24} // 24% used (from scraped data)
+	mgr := NewManager(cfg, nil, codex)
+
+	result, err := mgr.CalculateAllowance("codex")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// daily = 500000/7 = 71428
+	// available = 71428 * (1 - 0.24) = 54285
+	// allowance = 54285 * 0.10 = 5428
+	if result.Allowance <= 0 {
+		t.Fatalf("expected positive allowance for codex, got %d", result.Allowance)
+	}
+	if result.Mode != "daily" {
+		t.Fatalf("mode = %s, want daily", result.Mode)
+	}
+	if result.UsedPercent != 24 {
+		t.Fatalf("used percent = %f, want 24", result.UsedPercent)
+	}
+}
+
 func TestGetUsedPercent_Errors(t *testing.T) {
 	cfg := &config.Config{
 		Budget: config.BudgetConfig{

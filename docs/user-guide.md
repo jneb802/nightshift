@@ -246,6 +246,21 @@ nightshift run --project ~/code/myproject
 nightshift run --task lint
 ```
 
+### Preview Upcoming Runs
+
+See what Nightshift would run next without changing state:
+
+```bash
+# Preview the next 3 scheduled runs
+nightshift preview -n 3
+
+# Show full prompts
+nightshift preview --long
+
+# Write prompts to files
+nightshift preview --write ./nightshift-prompts
+```
+
 ### Daemon Mode
 
 Run Nightshift as a background daemon that executes on schedule:
@@ -445,12 +460,8 @@ After each run, Nightshift generates a summary at:
 
 Launch the terminal UI for real-time monitoring:
 
-```go
-// From your code, import and use:
-import "github.com/marcusvorwaller/nightshift/internal/ui"
-
-model := ui.New()
-model.Run()
+```bash
+nightshift tui
 ```
 
 The TUI shows three panels:

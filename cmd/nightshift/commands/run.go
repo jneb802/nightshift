@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -111,28 +112,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Create task selector
 	selector := tasks.NewSelector(cfg, st)
 
-	// Initialize agent
-	agent := agents.NewClaudeAgent()
-	if !agent.Available() {
-		return fmt.Errorf("claude CLI not found in PATH")
-	}
-
-	// Create orchestrator
-	orch := orchestrator.New(
-		orchestrator.WithAgent(agent),
-		orchestrator.WithConfig(orchestrator.Config{
-			MaxIterations: 3,
-			AgentTimeout:  30 * time.Minute,
-		}),
-		orchestrator.WithLogger(logging.Component("orchestrator")),
-	)
-
 	// Run execution
 	return executeRun(ctx, executeRunParams{
 		cfg:        cfg,
 		budgetMgr:  budgetMgr,
 		selector:   selector,
-		orch:       orch,
 		st:         st,
 		projects:   projects,
 		taskFilter: taskFilter,
@@ -145,12 +129,71 @@ type executeRunParams struct {
 	cfg        *config.Config
 	budgetMgr  *budget.Manager
 	selector   *tasks.Selector
-	orch       *orchestrator.Orchestrator
 	st         *state.State
 	projects   []string
 	taskFilter string
 	dryRun     bool
 	log        *logging.Logger
+}
+
+// providerChoice holds a selected provider's agent and name.
+type providerChoice struct {
+	agent    agents.Agent
+	name     string
+	allowance *budget.AllowanceResult
+}
+
+// selectProvider picks the best available provider with budget remaining.
+// Order: claude first, then codex as fallback.
+func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.Logger) (*providerChoice, error) {
+	type candidate struct {
+		name    string
+		binary  string
+		makeAgent func() agents.Agent
+	}
+
+	var candidates []candidate
+	if cfg.Providers.Claude.Enabled {
+		candidates = append(candidates, candidate{
+			name:   "claude",
+			binary: "claude",
+			makeAgent: func() agents.Agent { return agents.NewClaudeAgent() },
+		})
+	}
+	if cfg.Providers.Codex.Enabled {
+		candidates = append(candidates, candidate{
+			name:   "codex",
+			binary: "codex",
+			makeAgent: func() agents.Agent { return agents.NewCodexAgent() },
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no providers enabled in config")
+	}
+
+	for _, c := range candidates {
+		if _, err := exec.LookPath(c.binary); err != nil {
+			log.Infof("provider %s: CLI not in PATH, skipping", c.name)
+			continue
+		}
+		allowance, err := budgetMgr.CalculateAllowance(c.name)
+		if err != nil {
+			log.Warnf("provider %s: budget error: %v", c.name, err)
+			continue
+		}
+		if allowance.Allowance <= 0 {
+			log.Infof("provider %s: budget exhausted (%.1f%% used)", c.name, allowance.UsedPercent)
+			continue
+		}
+		return &providerChoice{
+			agent:     c.makeAgent(),
+			name:      c.name,
+			allowance: allowance,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no providers available with remaining budget")
 }
 
 func executeRun(ctx context.Context, p executeRunParams) error {
@@ -172,21 +215,27 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			continue
 		}
 
-		// Calculate budget allowance for primary provider (claude)
-		allowance, err := p.budgetMgr.CalculateAllowance("claude")
+		// Select the best available provider with remaining budget
+		choice, err := selectProvider(p.cfg, p.budgetMgr, p.log)
 		if err != nil {
-			p.log.Warnf("budget calc error: %v", err)
-			continue
-		}
-
-		if allowance.Allowance <= 0 {
-			p.log.Info("budget exhausted")
+			p.log.Infof("no provider available: %v", err)
 			break
 		}
 
 		fmt.Printf("\n=== Project: %s ===\n", projectPath)
+		fmt.Printf("Provider: %s\n", choice.name)
 		fmt.Printf("Budget: %d tokens available (%.1f%% used, mode=%s)\n",
-			allowance.Allowance, allowance.UsedPercent, allowance.Mode)
+			choice.allowance.Allowance, choice.allowance.UsedPercent, choice.allowance.Mode)
+
+		// Create orchestrator with the selected agent
+		orch := orchestrator.New(
+			orchestrator.WithAgent(choice.agent),
+			orchestrator.WithConfig(orchestrator.Config{
+				MaxIterations: 3,
+				AgentTimeout:  30 * time.Minute,
+			}),
+			orchestrator.WithLogger(logging.Component("orchestrator")),
+		)
 
 		// Select tasks
 		var selectedTasks []tasks.ScoredTask
@@ -204,7 +253,7 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			}}
 		} else {
 			// Select top tasks that fit budget
-			selectedTasks = p.selector.SelectTopN(allowance.Allowance, projectPath, 5)
+			selectedTasks = p.selector.SelectTopN(choice.allowance.Allowance, projectPath, 5)
 		}
 
 		if len(selectedTasks) == 0 {
@@ -233,7 +282,7 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			}
 
 			tasksRun++
-			fmt.Printf("\n--- Running: %s ---\n", scoredTask.Definition.Name)
+			fmt.Printf("\n--- Running: %s (via %s) ---\n", scoredTask.Definition.Name, choice.name)
 
 			// Create task instance
 			taskInstance := &tasks.Task{
@@ -248,7 +297,7 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			p.st.MarkAssigned(taskInstance.ID, projectPath, string(scoredTask.Definition.Type))
 
 			// Execute via orchestrator
-			result, err := p.orch.RunTask(ctx, taskInstance, projectPath)
+			result, err := orch.RunTask(ctx, taskInstance, projectPath)
 
 			// Clear assignment
 			p.st.ClearAssigned(taskInstance.ID)
