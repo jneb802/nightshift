@@ -20,7 +20,17 @@ var migrations = []Migration{
 		Description: "initial schema: projects, task_history, assigned_tasks, run_history, snapshots",
 		SQL:         migration001SQL,
 	},
+	{
+		Version:     2,
+		Description: "add reset time columns to snapshots",
+		SQL:         migration002SQL,
+	},
 }
+
+const migration002SQL = `
+ALTER TABLE snapshots ADD COLUMN session_reset_time TEXT;
+ALTER TABLE snapshots ADD COLUMN weekly_reset_time TEXT;
+`
 
 const migration001SQL = `
 CREATE TABLE projects (

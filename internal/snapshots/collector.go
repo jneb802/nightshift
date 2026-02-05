@@ -32,19 +32,21 @@ type CodexUsage interface {
 
 // Snapshot represents a stored usage snapshot.
 type Snapshot struct {
-	ID             int64
-	Provider       string
-	Timestamp      time.Time
-	WeekStart      time.Time
-	LocalTokens    int64
-	LocalDaily     int64
-	ScrapedPct     *float64
-	InferredBudget *int64
-	DayOfWeek      int
-	HourOfDay      int
-	WeekNumber     int
-	Year           int
-	ScrapeErr      error `json:"-"` // not persisted; for CLI diagnostics
+	ID               int64
+	Provider         string
+	Timestamp        time.Time
+	WeekStart        time.Time
+	LocalTokens      int64
+	LocalDaily       int64
+	ScrapedPct       *float64
+	InferredBudget   *int64
+	DayOfWeek        int
+	HourOfDay        int
+	WeekNumber       int
+	Year             int
+	SessionResetTime string // scraped reset time for current session/5h window
+	WeeklyResetTime  string // scraped reset time for weekly window
+	ScrapeErr        error  `json:"-"` // not persisted; for CLI diagnostics
 }
 
 // HourlyAverage represents average daily tokens by hour.
@@ -89,6 +91,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 	var err error
 	var scrapedPct *float64
 	var scrapeErr error
+	var sessionResetTime, weeklyResetTime string
 
 	switch provider {
 	case "claude":
@@ -107,9 +110,13 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 			result, sErr := c.scraper.ScrapeClaudeUsage(ctx)
 			if sErr != nil {
 				scrapeErr = sErr
-			} else if result.WeeklyPct >= 0 && result.WeeklyPct <= 100 {
-				pct := result.WeeklyPct
-				scrapedPct = &pct
+			} else {
+				if result.WeeklyPct >= 0 && result.WeeklyPct <= 100 {
+					pct := result.WeeklyPct
+					scrapedPct = &pct
+				}
+				sessionResetTime = result.SessionResetTime
+				weeklyResetTime = result.WeeklyResetTime
 			}
 		}
 	case "codex":
@@ -124,9 +131,13 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 			result, sErr := c.scraper.ScrapeCodexUsage(ctx)
 			if sErr != nil {
 				scrapeErr = sErr
-			} else if result.WeeklyPct >= 0 && result.WeeklyPct <= 100 {
-				pct := result.WeeklyPct
-				scrapedPct = &pct
+			} else {
+				if result.WeeklyPct >= 0 && result.WeeklyPct <= 100 {
+					pct := result.WeeklyPct
+					scrapedPct = &pct
+				}
+				sessionResetTime = result.SessionResetTime
+				weeklyResetTime = result.WeeklyResetTime
 			}
 		}
 	default:
@@ -148,8 +159,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 	}
 
 	result, err := c.db.SQL().Exec(
-		`INSERT INTO snapshots (provider, timestamp, week_start, local_tokens, local_daily, scraped_pct, inferred_budget, day_of_week, hour_of_day, week_number, year)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO snapshots (provider, timestamp, week_start, local_tokens, local_daily, scraped_pct, inferred_budget, day_of_week, hour_of_day, week_number, year, session_reset_time, weekly_reset_time)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		provider,
 		now,
 		weekStart,
@@ -161,6 +172,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 		hourOfDay,
 		weekNumber,
 		year,
+		nullString(sessionResetTime),
+		nullString(weeklyResetTime),
 	)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("insert snapshot: %w", err)
@@ -169,19 +182,21 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 	id, _ := result.LastInsertId()
 
 	return Snapshot{
-		ID:             id,
-		Provider:       provider,
-		Timestamp:      now,
-		WeekStart:      weekStart,
-		LocalTokens:    localWeekly,
-		LocalDaily:     localDaily,
-		ScrapedPct:     scrapedPct,
-		InferredBudget: inferredBudget,
-		DayOfWeek:      dayOfWeek,
-		HourOfDay:      hourOfDay,
-		WeekNumber:     weekNumber,
-		Year:           year,
-		ScrapeErr:      scrapeErr,
+		ID:               id,
+		Provider:         provider,
+		Timestamp:        now,
+		WeekStart:        weekStart,
+		LocalTokens:      localWeekly,
+		LocalDaily:       localDaily,
+		ScrapedPct:       scrapedPct,
+		InferredBudget:   inferredBudget,
+		DayOfWeek:        dayOfWeek,
+		HourOfDay:        hourOfDay,
+		WeekNumber:       weekNumber,
+		Year:             year,
+		SessionResetTime: sessionResetTime,
+		WeeklyResetTime:  weeklyResetTime,
+		ScrapeErr:        scrapeErr,
 	}, nil
 }
 
@@ -191,7 +206,7 @@ func (c *Collector) GetLatest(provider string, n int) ([]Snapshot, error) {
 		return []Snapshot{}, nil
 	}
 	rows, err := c.db.SQL().Query(
-		`SELECT id, provider, timestamp, week_start, local_tokens, local_daily, scraped_pct, inferred_budget, day_of_week, hour_of_day, week_number, year
+		`SELECT id, provider, timestamp, week_start, local_tokens, local_daily, scraped_pct, inferred_budget, day_of_week, hour_of_day, week_number, year, session_reset_time, weekly_reset_time
 		 FROM snapshots
 		 WHERE provider = ?
 		 ORDER BY timestamp DESC
@@ -222,7 +237,7 @@ func (c *Collector) GetLatest(provider string, n int) ([]Snapshot, error) {
 func (c *Collector) GetSinceWeekStart(provider string) ([]Snapshot, error) {
 	weekStart := startOfWeek(time.Now(), c.weekStartDay)
 	rows, err := c.db.SQL().Query(
-		`SELECT id, provider, timestamp, week_start, local_tokens, local_daily, scraped_pct, inferred_budget, day_of_week, hour_of_day, week_number, year
+		`SELECT id, provider, timestamp, week_start, local_tokens, local_daily, scraped_pct, inferred_budget, day_of_week, hour_of_day, week_number, year, session_reset_time, weekly_reset_time
 		 FROM snapshots
 		 WHERE provider = ? AND week_start = ?
 		 ORDER BY timestamp ASC`,
@@ -303,6 +318,7 @@ func scanSnapshot(rows *sql.Rows) (Snapshot, error) {
 	var snapshot Snapshot
 	var scraped sql.NullFloat64
 	var inferred sql.NullInt64
+	var sessionReset, weeklyReset sql.NullString
 	if err := rows.Scan(
 		&snapshot.ID,
 		&snapshot.Provider,
@@ -316,6 +332,8 @@ func scanSnapshot(rows *sql.Rows) (Snapshot, error) {
 		&snapshot.HourOfDay,
 		&snapshot.WeekNumber,
 		&snapshot.Year,
+		&sessionReset,
+		&weeklyReset,
 	); err != nil {
 		return Snapshot{}, fmt.Errorf("scan snapshot: %w", err)
 	}
@@ -325,6 +343,12 @@ func scanSnapshot(rows *sql.Rows) (Snapshot, error) {
 	if inferred.Valid {
 		value := inferred.Int64
 		snapshot.InferredBudget = &value
+	}
+	if sessionReset.Valid {
+		snapshot.SessionResetTime = sessionReset.String
+	}
+	if weeklyReset.Valid {
+		snapshot.WeeklyResetTime = weeklyReset.String
 	}
 	return snapshot, nil
 }
@@ -351,6 +375,13 @@ func nullInt(value *int64) any {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: *value, Valid: true}
+}
+
+func nullString(value string) any {
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
 }
 
 // codexTokenTotals returns 0 for both weekly and daily because Codex session

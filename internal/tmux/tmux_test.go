@@ -220,6 +220,128 @@ func TestWaitForSubstantialContentTimeout(t *testing.T) {
 	}
 }
 
+func TestParseClaudeResetTimes(t *testing.T) {
+	tests := []struct {
+		name           string
+		output         string
+		wantSession    string
+		wantWeekly     string
+	}{
+		{
+			name: "real claude output",
+			output: `
+Current session
+██████████████████████████████████████████  0% used
+Resets 8:59pm (America/Los_Angeles)
+
+Current week (all models)
+██████████████████████░░░░░░░░░░░░░░░░░░░  59% used
+Resets Feb 8 at 9:59am (America/Los_Angeles)
+
+Current week (Sonnet only)
+█░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5% used
+Resets Feb 8 at 10:59am (America/Los_Angeles)
+`,
+			wantSession: "8:59pm (America/Los_Angeles)",
+			wantWeekly:  "Feb 8 at 9:59am (America/Los_Angeles)",
+		},
+		{
+			name: "simple time format",
+			output: `
+Current session
+██ 0% used
+Resets 9pm (America/Los_Angeles)
+
+Current week (all models)
+██ 42% used
+Resets Feb 8 at 10am (America/Los_Angeles)
+`,
+			wantSession: "9pm (America/Los_Angeles)",
+			wantWeekly:  "Feb 8 at 10am (America/Los_Angeles)",
+		},
+		{
+			name:        "no reset times",
+			output:      "nothing relevant here",
+			wantSession: "",
+			wantWeekly:  "",
+		},
+		{
+			name: "session only",
+			output: `
+Current session
+██ 0% used
+Resets 9pm (America/Los_Angeles)
+`,
+			wantSession: "9pm (America/Los_Angeles)",
+			wantWeekly:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, weekly := parseClaudeResetTimes(tt.output)
+			if session != tt.wantSession {
+				t.Errorf("session reset = %q, want %q", session, tt.wantSession)
+			}
+			if weekly != tt.wantWeekly {
+				t.Errorf("weekly reset = %q, want %q", weekly, tt.wantWeekly)
+			}
+		})
+	}
+}
+
+func TestParseCodexResetTimes(t *testing.T) {
+	tests := []struct {
+		name        string
+		output      string
+		wantSession string
+		wantWeekly  string
+	}{
+		{
+			name: "real codex output",
+			output: `
+5h limit:          [████████████████████   ] 71% left (resets 20:15)
+Weekly limit:      [████████████████████   ] 77% left (resets 20:08 on 9 Feb)
+`,
+			wantSession: "20:15",
+			wantWeekly:  "20:08 on 9 Feb",
+		},
+		{
+			name: "different times",
+			output: `
+5h limit: 29% used (resets 01:18)
+Weekly limit: 23% used (resets 01:18 on 5 Feb)
+`,
+			wantSession: "01:18",
+			wantWeekly:  "01:18 on 5 Feb",
+		},
+		{
+			name:        "no reset times",
+			output:      "nothing relevant here",
+			wantSession: "",
+			wantWeekly:  "",
+		},
+		{
+			name: "weekly only",
+			output: `
+Weekly limit: 23% used (resets 01:18 on 5 Feb)
+`,
+			wantSession: "",
+			wantWeekly:  "01:18 on 5 Feb",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, weekly := parseCodexResetTimes(tt.output)
+			if session != tt.wantSession {
+				t.Errorf("session reset = %q, want %q", session, tt.wantSession)
+			}
+			if weekly != tt.wantWeekly {
+				t.Errorf("weekly reset = %q, want %q", weekly, tt.wantWeekly)
+			}
+		})
+	}
+}
+
 func TestParseCodexWeeklyPct(t *testing.T) {
 	tests := []struct {
 		name    string

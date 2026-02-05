@@ -55,8 +55,8 @@ func TestOpenIdempotent(t *testing.T) {
 	if err := row.Scan(&count); err != nil {
 		t.Fatalf("scan schema_version count: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 schema_version row, got %d", count)
+	if count != len(migrations) {
+		t.Fatalf("expected %d schema_version rows, got %d", len(migrations), count)
 	}
 }
 
@@ -78,8 +78,9 @@ func TestMigrationVersioning(t *testing.T) {
 		t.Fatalf("close db: %v", err)
 	}
 
+	nextVersion := len(migrations) + 1
 	migrations = append(migrations, Migration{
-		Version:     2,
+		Version:     nextVersion,
 		Description: "add test table",
 		SQL:         `CREATE TABLE migration_test (id INTEGER);`,
 	})
@@ -94,8 +95,8 @@ func TestMigrationVersioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("current version: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("expected version 2, got %d", version)
+	if version != nextVersion {
+		t.Fatalf("expected version %d, got %d", nextVersion, version)
 	}
 
 	if !tableExists(t, database.SQL(), "migration_test") {

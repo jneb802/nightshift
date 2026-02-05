@@ -18,10 +18,12 @@ var (
 
 // UsageResult captures scraped usage metadata.
 type UsageResult struct {
-	Provider  string
-	WeeklyPct float64
-	ScrapedAt time.Time
-	RawOutput string
+	Provider         string
+	WeeklyPct        float64
+	SessionResetTime string // e.g. "9pm (America/Los_Angeles)" or "01:18 on 5 Feb"
+	WeeklyResetTime  string // e.g. "Feb 8 at 10am (America/Los_Angeles)" or "20:08 on 9 Feb"
+	ScrapedAt        time.Time
+	RawOutput        string
 }
 
 // ScrapeClaudeUsage starts Claude in tmux, runs /usage, and parses weekly usage percent.
@@ -89,11 +91,15 @@ func ScrapeClaudeUsage(ctx context.Context) (UsageResult, error) {
 		return UsageResult{}, err
 	}
 
+	sessionReset, weeklyReset := parseClaudeResetTimes(clean)
+
 	return UsageResult{
-		Provider:  "claude",
-		WeeklyPct: weeklyPct,
-		ScrapedAt: time.Now(),
-		RawOutput: clean,
+		Provider:         "claude",
+		WeeklyPct:        weeklyPct,
+		SessionResetTime: sessionReset,
+		WeeklyResetTime:  weeklyReset,
+		ScrapedAt:        time.Now(),
+		RawOutput:        clean,
 	}, nil
 }
 
@@ -173,11 +179,15 @@ func ScrapeCodexUsage(ctx context.Context) (UsageResult, error) {
 		return UsageResult{}, err
 	}
 
+	sessionReset, weeklyReset := parseCodexResetTimes(cleanOutput)
+
 	return UsageResult{
-		Provider:  "codex",
-		WeeklyPct: weeklyPct,
-		ScrapedAt: time.Now(),
-		RawOutput: cleanOutput,
+		Provider:         "codex",
+		WeeklyPct:        weeklyPct,
+		SessionResetTime: sessionReset,
+		WeeklyResetTime:  weeklyReset,
+		ScrapedAt:        time.Now(),
+		RawOutput:        cleanOutput,
 	}, nil
 }
 
@@ -270,6 +280,59 @@ func countNonEmptyLines(s string) int {
 		}
 	}
 	return count
+}
+
+// parseClaudeResetTimes extracts session and weekly reset times from Claude /usage output.
+// Claude shows:
+//
+//	Current session
+//	... 0% used
+//	Resets 9pm (America/Los_Angeles)
+//
+//	Current week (all models)
+//	... 59% used
+//	Resets Feb 8 at 10am (America/Los_Angeles)
+func parseClaudeResetTimes(output string) (sessionReset, weeklyReset string) {
+	output = StripANSI(output)
+
+	// Session reset: appears after "Current session" and before "Current week".
+	// Format: "Resets 9pm (America/Los_Angeles)" or "Resets 8:59pm (America/Los_Angeles)"
+	sessionRe := regexp.MustCompile(`(?is)current\s+session.*?resets\s+(.+?)(?:\n|$)`)
+	if m := sessionRe.FindStringSubmatch(output); len(m) == 2 {
+		sessionReset = strings.TrimSpace(m[1])
+	}
+
+	// Weekly reset: appears after "Current week (all models)".
+	// Format: "Resets Feb 8 at 10am (America/Los_Angeles)" or "Resets Feb 8 at 9:59am (America/Los_Angeles)"
+	weeklyRe := regexp.MustCompile(`(?is)current\s+week\s*\(all\s+models\).*?resets\s+(.+?)(?:\n|$)`)
+	if m := weeklyRe.FindStringSubmatch(output); len(m) == 2 {
+		weeklyReset = strings.TrimSpace(m[1])
+	}
+
+	return sessionReset, weeklyReset
+}
+
+// parseCodexResetTimes extracts session (5h) and weekly reset times from Codex /status output.
+// Codex shows:
+//
+//	5h limit:     [...] 71% left (resets 20:15)
+//	Weekly limit: [...] 77% left (resets 20:08 on 9 Feb)
+func parseCodexResetTimes(output string) (sessionReset, weeklyReset string) {
+	output = StripANSI(output)
+
+	// Session (5h) reset: "(resets HH:MM)" without "on" date
+	sessionRe := regexp.MustCompile(`(?i)5h\s+limit[^\n]*\(resets\s+(\d{1,2}:\d{2})\)`)
+	if m := sessionRe.FindStringSubmatch(output); len(m) == 2 {
+		sessionReset = m[1]
+	}
+
+	// Weekly reset: "(resets HH:MM on D Mon)"
+	weeklyRe := regexp.MustCompile(`(?i)weekly\s+limit[^\n]*\(resets\s+(\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+)\)`)
+	if m := weeklyRe.FindStringSubmatch(output); len(m) == 2 {
+		weeklyReset = m[1]
+	}
+
+	return sessionReset, weeklyReset
 }
 
 // ctxSleep pauses for d or until ctx is cancelled.

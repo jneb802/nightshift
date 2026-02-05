@@ -20,16 +20,30 @@ func (f fakeClaude) GetWeeklyUsage() (int64, error) { return f.weekly, f.err }
 func (f fakeClaude) GetTodayUsage() (int64, error)  { return f.daily, f.err }
 
 type fakeScraper struct {
-	claudePct float64
-	codexPct  float64
+	claudePct          float64
+	codexPct           float64
+	sessionResetTime   string
+	weeklyResetTime    string
 }
 
 func (f fakeScraper) ScrapeClaudeUsage(ctx context.Context) (tmux.UsageResult, error) {
-	return tmux.UsageResult{Provider: "claude", WeeklyPct: f.claudePct, ScrapedAt: time.Now()}, nil
+	return tmux.UsageResult{
+		Provider:         "claude",
+		WeeklyPct:        f.claudePct,
+		SessionResetTime: f.sessionResetTime,
+		WeeklyResetTime:  f.weeklyResetTime,
+		ScrapedAt:        time.Now(),
+	}, nil
 }
 
 func (f fakeScraper) ScrapeCodexUsage(ctx context.Context) (tmux.UsageResult, error) {
-	return tmux.UsageResult{Provider: "codex", WeeklyPct: f.codexPct, ScrapedAt: time.Now()}, nil
+	return tmux.UsageResult{
+		Provider:         "codex",
+		WeeklyPct:        f.codexPct,
+		SessionResetTime: f.sessionResetTime,
+		WeeklyResetTime:  f.weeklyResetTime,
+		ScrapedAt:        time.Now(),
+	}, nil
 }
 
 type fakeCodex struct {
@@ -127,6 +141,110 @@ func TestCodexTokenTotalsReturnsZero(t *testing.T) {
 	}
 	if daily != 0 {
 		t.Fatalf("daily tokens = %d, want 0", daily)
+	}
+}
+
+func TestTakeSnapshotStoresResetTimes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	scraper := fakeScraper{
+		claudePct:        50,
+		sessionResetTime: "9pm (America/Los_Angeles)",
+		weeklyResetTime:  "Feb 8 at 10am (America/Los_Angeles)",
+	}
+	collector := NewCollector(database, fakeClaude{weekly: 700, daily: 120}, nil, scraper, time.Monday)
+
+	_, err = collector.TakeSnapshot(context.Background(), "claude")
+	if err != nil {
+		t.Fatalf("take snapshot: %v", err)
+	}
+
+	latest, err := collector.GetLatest("claude", 1)
+	if err != nil {
+		t.Fatalf("get latest: %v", err)
+	}
+	if len(latest) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(latest))
+	}
+
+	snap := latest[0]
+	if snap.SessionResetTime != "9pm (America/Los_Angeles)" {
+		t.Fatalf("session reset = %q, want %q", snap.SessionResetTime, "9pm (America/Los_Angeles)")
+	}
+	if snap.WeeklyResetTime != "Feb 8 at 10am (America/Los_Angeles)" {
+		t.Fatalf("weekly reset = %q, want %q", snap.WeeklyResetTime, "Feb 8 at 10am (America/Los_Angeles)")
+	}
+}
+
+func TestTakeSnapshotCodexResetTimes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	scraper := fakeScraper{
+		codexPct:         42,
+		sessionResetTime: "20:15",
+		weeklyResetTime:  "20:08 on 9 Feb",
+	}
+	collector := NewCollector(database, nil, fakeCodex{}, scraper, time.Monday)
+
+	snap, err := collector.TakeSnapshot(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("take snapshot: %v", err)
+	}
+
+	if snap.SessionResetTime != "20:15" {
+		t.Fatalf("session reset = %q, want %q", snap.SessionResetTime, "20:15")
+	}
+	if snap.WeeklyResetTime != "20:08 on 9 Feb" {
+		t.Fatalf("weekly reset = %q, want %q", snap.WeeklyResetTime, "20:08 on 9 Feb")
+	}
+}
+
+func TestTakeSnapshotEmptyResetTimes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	// scraper with no reset times
+	collector := NewCollector(database, fakeClaude{weekly: 100, daily: 10}, nil, fakeScraper{claudePct: 25}, time.Monday)
+
+	_, err = collector.TakeSnapshot(context.Background(), "claude")
+	if err != nil {
+		t.Fatalf("take snapshot: %v", err)
+	}
+
+	latest, err := collector.GetLatest("claude", 1)
+	if err != nil {
+		t.Fatalf("get latest: %v", err)
+	}
+
+	snap := latest[0]
+	if snap.SessionResetTime != "" {
+		t.Fatalf("session reset = %q, want empty", snap.SessionResetTime)
+	}
+	if snap.WeeklyResetTime != "" {
+		t.Fatalf("weekly reset = %q, want empty", snap.WeeklyResetTime)
 	}
 }
 
