@@ -2,9 +2,7 @@ package snapshots
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -87,26 +85,48 @@ func TestTakeSnapshotInsertsClaude(t *testing.T) {
 	}
 }
 
-func TestCodexTokenTotals(t *testing.T) {
-	today := time.Now()
+func TestTakeSnapshotCodexSkipsInferredBudget(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	todayPath := sessionPathForDate(home, today)
-	writeCodexSession(t, todayPath, []int64{100, 200})
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
 
-	past := today.AddDate(0, 0, -3)
-	pastPath := sessionPathForDate(home, past)
-	writeCodexSession(t, pastPath, []int64{50})
+	collector := NewCollector(database, nil, fakeCodex{}, fakeScraper{codexPct: 42}, time.Monday)
 
-	totals, daily, err := codexTokenTotals(fakeCodex{files: []string{todayPath, pastPath}})
+	snap, err := collector.TakeSnapshot(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("take snapshot: %v", err)
+	}
+
+	if snap.LocalTokens != 0 {
+		t.Fatalf("local tokens = %d, want 0", snap.LocalTokens)
+	}
+	if snap.ScrapedPct == nil || *snap.ScrapedPct != 42 {
+		t.Fatalf("scraped pct = %v, want 42", snap.ScrapedPct)
+	}
+	// Codex has localWeekly=0, so inferred budget must be nil (not 0).
+	if snap.InferredBudget != nil {
+		t.Fatalf("inferred budget = %v, want nil (Codex has no local tokens)", snap.InferredBudget)
+	}
+}
+
+func TestCodexTokenTotalsReturnsZero(t *testing.T) {
+	// Codex session files don't contain raw token counts, only rate_limits
+	// with used_percent. codexTokenTotals always returns 0.
+	weekly, daily, err := codexTokenTotals(fakeCodex{files: []string{"/some/path.jsonl"}})
 	if err != nil {
 		t.Fatalf("codexTokenTotals: %v", err)
 	}
-	if totals != 350 {
-		t.Fatalf("weekly tokens = %d", totals)
+	if weekly != 0 {
+		t.Fatalf("weekly tokens = %d, want 0", weekly)
 	}
-	if daily != 300 {
-		t.Fatalf("daily tokens = %d", daily)
+	if daily != 0 {
+		t.Fatalf("daily tokens = %d, want 0", daily)
 	}
 }
 
@@ -150,37 +170,5 @@ func TestPruneSnapshots(t *testing.T) {
 	}
 	if deleted != 1 {
 		t.Fatalf("expected 1 row deleted, got %d", deleted)
-	}
-}
-
-func sessionPathForDate(root string, date time.Time) string {
-	return filepath.Join(
-		root,
-		"sessions",
-		date.Format("2006"),
-		date.Format("01"),
-		date.Format("02"),
-		"session.jsonl",
-	)
-}
-
-func writeCodexSession(t *testing.T, path string, counts []int64) {
-	t.Helper()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	defer file.Close()
-
-	for _, count := range counts {
-		line := []byte("{\"token_count\": " + strconv.FormatInt(count, 10) + "}\n")
-		if _, err := file.Write(line); err != nil {
-			t.Fatalf("write session: %v", err)
-		}
 	}
 }

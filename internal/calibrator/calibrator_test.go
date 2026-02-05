@@ -167,6 +167,99 @@ func TestGetBudgetImplementsInterface(t *testing.T) {
 	}
 }
 
+func TestCalibrateCodexUsesScrapedPct(t *testing.T) {
+	cfg := &config.Config{
+		Budget: config.BudgetConfig{
+			BillingMode:      "subscription",
+			CalibrateEnabled: true,
+			WeeklyTokens:     500000,
+			WeekStartDay:     "monday",
+			PerProvider:      map[string]int{"codex": 1000000},
+		},
+	}
+	cal, database := newTestCalibrator(t, cfg)
+
+	now := time.Now()
+	// Insert Codex snapshots with local_tokens=0 (the structural reality)
+	// and scraped_pct values. The calibrator should use scraped_pct directly.
+	insertSnapshot(t, database, "codex", 0, 50, now)
+	insertSnapshot(t, database, "codex", 0, 50, now.Add(1*time.Hour))
+	insertSnapshot(t, database, "codex", 0, 50, now.Add(2*time.Hour))
+
+	result, err := cal.Calibrate("codex")
+	if err != nil {
+		t.Fatalf("Calibrate error: %v", err)
+	}
+	if result.Source != "scraped" {
+		t.Fatalf("source = %s, want scraped", result.Source)
+	}
+	if result.SampleCount != 3 {
+		t.Fatalf("sample count = %d, want 3", result.SampleCount)
+	}
+	// config budget = 1000000, scraped_pct = 50 → inferred = 1000000 * 0.50 = 500000
+	if result.InferredBudget != 500000 {
+		t.Fatalf("budget = %d, want 500000", result.InferredBudget)
+	}
+}
+
+func TestCalibrateCodexNoSamples(t *testing.T) {
+	cfg := &config.Config{
+		Budget: config.BudgetConfig{
+			BillingMode:      "subscription",
+			CalibrateEnabled: true,
+			WeeklyTokens:     500000,
+			WeekStartDay:     "monday",
+			PerProvider:      map[string]int{"codex": 800000},
+		},
+	}
+	cal, _ := newTestCalibrator(t, cfg)
+
+	result, err := cal.Calibrate("codex")
+	if err != nil {
+		t.Fatalf("Calibrate error: %v", err)
+	}
+	// No codex snapshots → falls back to config
+	if result.Source != "config" {
+		t.Fatalf("source = %s, want config", result.Source)
+	}
+	if result.InferredBudget != 800000 {
+		t.Fatalf("budget = %d, want 800000", result.InferredBudget)
+	}
+}
+
+func TestCalibrateCodexFiltersOutOfRange(t *testing.T) {
+	cfg := &config.Config{
+		Budget: config.BudgetConfig{
+			BillingMode:      "subscription",
+			CalibrateEnabled: true,
+			WeeklyTokens:     500000,
+			WeekStartDay:     "monday",
+			PerProvider:      map[string]int{"codex": 1000000},
+		},
+	}
+	cal, database := newTestCalibrator(t, cfg)
+
+	now := time.Now()
+	// scraped_pct=0 should be filtered (BETWEEN 1 AND 99)
+	insertSnapshot(t, database, "codex", 0, 0, now)
+	// scraped_pct=100 should be filtered
+	insertSnapshot(t, database, "codex", 0, 100, now.Add(1*time.Hour))
+	// scraped_pct=40 should be included
+	insertSnapshot(t, database, "codex", 0, 40, now.Add(2*time.Hour))
+
+	result, err := cal.Calibrate("codex")
+	if err != nil {
+		t.Fatalf("Calibrate error: %v", err)
+	}
+	if result.SampleCount != 1 {
+		t.Fatalf("sample count = %d, want 1", result.SampleCount)
+	}
+	// 1000000 * 0.40 = 400000
+	if result.InferredBudget != 400000 {
+		t.Fatalf("budget = %d, want 400000", result.InferredBudget)
+	}
+}
+
 func TestCalibrateSkipsOutOfRange(t *testing.T) {
 	cfg := &config.Config{
 		Budget: config.BudgetConfig{

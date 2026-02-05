@@ -1,21 +1,15 @@
 package snapshots
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/marcusvorwaller/nightshift/internal/db"
-	"github.com/marcusvorwaller/nightshift/internal/providers"
 	"github.com/marcusvorwaller/nightshift/internal/tmux"
 )
 
@@ -50,6 +44,7 @@ type Snapshot struct {
 	HourOfDay      int
 	WeekNumber     int
 	Year           int
+	ScrapeErr      error `json:"-"` // not persisted; for CLI diagnostics
 }
 
 // HourlyAverage represents average daily tokens by hour.
@@ -93,6 +88,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 	var localWeekly, localDaily int64
 	var err error
 	var scrapedPct *float64
+	var scrapeErr error
 
 	switch provider {
 	case "claude":
@@ -108,11 +104,12 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 			return Snapshot{}, err
 		}
 		if c.scraper != nil {
-			if result, err := c.scraper.ScrapeClaudeUsage(ctx); err == nil {
+			result, sErr := c.scraper.ScrapeClaudeUsage(ctx)
+			if sErr != nil {
+				scrapeErr = sErr
+			} else if result.WeeklyPct >= 0 && result.WeeklyPct <= 100 {
 				pct := result.WeeklyPct
-				if pct >= 0 && pct <= 100 {
-					scrapedPct = &pct
-				}
+				scrapedPct = &pct
 			}
 		}
 	case "codex":
@@ -124,11 +121,12 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 			return Snapshot{}, err
 		}
 		if c.scraper != nil {
-			if result, err := c.scraper.ScrapeCodexUsage(ctx); err == nil {
+			result, sErr := c.scraper.ScrapeCodexUsage(ctx)
+			if sErr != nil {
+				scrapeErr = sErr
+			} else if result.WeeklyPct >= 0 && result.WeeklyPct <= 100 {
 				pct := result.WeeklyPct
-				if pct >= 0 && pct <= 100 {
-					scrapedPct = &pct
-				}
+				scrapedPct = &pct
 			}
 		}
 	default:
@@ -141,7 +139,10 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 	weekNumber, year := weekStart.ISOWeek()
 
 	var inferredBudget *int64
-	if scrapedPct != nil && *scrapedPct > 0 {
+	if scrapedPct != nil && *scrapedPct > 0 && localWeekly > 0 {
+		// Only infer budget from local tokens when they're available (Claude).
+		// Codex has localWeekly=0 structurally; its scraped_pct is used directly
+		// by the calibrator instead.
 		budget := int64(math.Round(float64(localWeekly) / (*scrapedPct / 100)))
 		inferredBudget = &budget
 	}
@@ -180,6 +181,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 		HourOfDay:      hourOfDay,
 		WeekNumber:     weekNumber,
 		Year:           year,
+		ScrapeErr:      scrapeErr,
 	}, nil
 }
 
@@ -351,83 +353,9 @@ func nullInt(value *int64) any {
 	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
-func codexTokenTotals(codex CodexUsage) (int64, int64, error) {
-	sessions, err := codex.ListSessionFiles()
-	if err != nil {
-		return 0, 0, err
-	}
-
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	weekStart := today.AddDate(0, 0, -6)
-
-	var weekly int64
-	var daily int64
-
-	for _, path := range sessions {
-		date, ok := codexSessionDate(path)
-		if !ok {
-			continue
-		}
-		tokens, err := codexSessionTokens(path)
-		if err != nil {
-			return 0, 0, err
-		}
-		if !date.Before(weekStart) && !date.After(today) {
-			weekly += tokens
-		}
-		if date.Equal(today) {
-			daily += tokens
-		}
-	}
-
-	return weekly, daily, nil
-}
-
-func codexSessionDate(path string) (time.Time, bool) {
-	parts := strings.Split(filepath.ToSlash(path), "/")
-	for i := 0; i+3 < len(parts); i++ {
-		if parts[i] != "sessions" {
-			continue
-		}
-		year, err1 := strconv.Atoi(parts[i+1])
-		month, err2 := strconv.Atoi(parts[i+2])
-		day, err3 := strconv.Atoi(parts[i+3])
-		if err1 != nil || err2 != nil || err3 != nil {
-			return time.Time{}, false
-		}
-		return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.Local), true
-	}
-	return time.Time{}, false
-}
-
-func codexSessionTokens(path string) (int64, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("open codex session: %w", err)
-	}
-	defer file.Close()
-
-	var total int64
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var entry providers.CodexSessionEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		if entry.TokenCount != nil {
-			total += *entry.TokenCount
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("scan codex session: %w", err)
-	}
-	return total, nil
+// codexTokenTotals returns 0 for both weekly and daily because Codex session
+// JSONL files don't store raw token counts. They only store rate_limits with
+// used_percent values. Token-level tracking for Codex relies on tmux scraping.
+func codexTokenTotals(_ CodexUsage) (int64, int64, error) {
+	return 0, 0, nil
 }

@@ -131,12 +131,17 @@ func (c *Calibrator) Calibrate(provider string) (CalibrationResult, error) {
 
 	inferred := roundToNearest(median, 1000)
 
+	source := "calibrated"
+	if provider == "codex" {
+		source = "scraped"
+	}
+
 	return CalibrationResult{
 		InferredBudget: int64(inferred),
 		Confidence:     confidence,
 		SampleCount:    sampleCount,
 		Variance:       variance,
-		Source:         "calibrated",
+		Source:         source,
 	}, nil
 }
 
@@ -156,6 +161,14 @@ func (c *Calibrator) GetBudget(provider string) (budget.BudgetEstimate, error) {
 }
 
 func (c *Calibrator) loadWeeklySamples(provider string) ([]float64, error) {
+	if provider == "codex" {
+		return c.loadCodexWeeklySamples()
+	}
+	return c.loadClaudeWeeklySamples(provider)
+}
+
+// loadClaudeWeeklySamples infers budget from local_tokens / scraped_pct.
+func (c *Calibrator) loadClaudeWeeklySamples(provider string) ([]float64, error) {
 	weekStart := startOfWeek(time.Now(), c.weekStartDay)
 
 	rows, err := c.db.SQL().Query(
@@ -189,6 +202,45 @@ func (c *Calibrator) loadWeeklySamples(provider string) ([]float64, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate snapshots: %w", err)
+	}
+	return values, nil
+}
+
+// loadCodexWeeklySamples uses scraped_pct directly as the usage metric.
+// Codex has no local token counts; scraped_pct is the authoritative source.
+// Returns config_budget * (scraped_pct / 100) to produce token-scale values
+// compatible with the calibrator's outlier filtering and median logic.
+func (c *Calibrator) loadCodexWeeklySamples() ([]float64, error) {
+	weekStart := startOfWeek(time.Now(), c.weekStartDay)
+	configBudget := float64(c.cfg.GetProviderBudget("codex"))
+
+	rows, err := c.db.SQL().Query(
+		`SELECT scraped_pct
+		 FROM snapshots
+		 WHERE provider = 'codex'
+		 AND week_start = ?
+		 AND scraped_pct IS NOT NULL
+		 AND scraped_pct BETWEEN 1 AND 99`,
+		weekStart,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query codex snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	values := make([]float64, 0)
+	for rows.Next() {
+		var scrapedPct float64
+		if err := rows.Scan(&scrapedPct); err != nil {
+			return nil, fmt.Errorf("scan codex snapshot: %w", err)
+		}
+		// Convert scraped_pct to a token-scale inferred budget so the
+		// calibrator's outlier/median logic works uniformly.
+		inferred := configBudget * (scrapedPct / 100)
+		values = append(values, inferred)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate codex snapshots: %w", err)
 	}
 	return values, nil
 }
