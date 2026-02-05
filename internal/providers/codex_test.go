@@ -318,7 +318,9 @@ func TestCodexGetUsedPercent_Daily_TokenBased(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a session with token data for today
+	// Create a session with token data for today (single event: first == last)
+	// input=5000, cached=4000, output=1000, reasoning=200
+	// Billable: (5000-4000) + 1000 + 200 = 2200
 	sessionPath := filepath.Join(todayDir, "session.jsonl")
 	content := `{"type":"session_meta","payload":{"id":"test"}}
 ` + codexTokenCountJSON(5000, 4000, 1000, 200, 6200) + "\n"
@@ -334,11 +336,11 @@ func TestCodexGetUsedPercent_Daily_TokenBased(t *testing.T) {
 	}
 
 	// dailyBudget = 700000/7 = 100000
-	// usage = 6200 total tokens
-	// pct = 6200/100000 * 100 = 6.2%
-	expectedPct := float64(6200) / float64(100000) * 100
+	// billable = 2200
+	// pct = 2200/100000 * 100 = 2.2%
+	expectedPct := float64(2200) / float64(100000) * 100
 	if pct != expectedPct {
-		t.Errorf("GetUsedPercent(daily) = %.1f, want %.1f (token-based)", pct, expectedPct)
+		t.Errorf("GetUsedPercent(daily) = %.4f, want %.4f (token-based)", pct, expectedPct)
 	}
 }
 
@@ -719,6 +721,11 @@ func TestCodexParseSessionTokenUsage(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
+	// Two cumulative events: first and last
+	// Event 1: input=1000, cached=800, output=200, reasoning=50
+	// Event 2: input=2000, cached=1600, output=400, reasoning=100
+	// Delta:   input=1000, cached=800, output=200, reasoning=50
+	// Billable: (1000-800) + 200 + 50 = 450
 	content := `{"type":"session_meta","payload":{"id":"test"}}
 {"type":"response_item","payload":{"type":"message","role":"user"}}
 ` + codexTokenCountJSON(1000, 800, 200, 50, 1250) + "\n" +
@@ -737,21 +744,22 @@ func TestCodexParseSessionTokenUsage(t *testing.T) {
 	if usage == nil {
 		t.Fatal("expected non-nil token usage")
 	}
-	// Should return the last token_count entry (cumulative)
-	if usage.InputTokens != 2000 {
-		t.Errorf("InputTokens = %d, want 2000", usage.InputTokens)
+	// Returns delta between last and first events
+	if usage.InputTokens != 1000 {
+		t.Errorf("InputTokens = %d, want 1000 (delta)", usage.InputTokens)
 	}
-	if usage.CachedInputTokens != 1600 {
-		t.Errorf("CachedInputTokens = %d, want 1600", usage.CachedInputTokens)
+	if usage.CachedInputTokens != 800 {
+		t.Errorf("CachedInputTokens = %d, want 800 (delta)", usage.CachedInputTokens)
 	}
-	if usage.OutputTokens != 400 {
-		t.Errorf("OutputTokens = %d, want 400", usage.OutputTokens)
+	if usage.OutputTokens != 200 {
+		t.Errorf("OutputTokens = %d, want 200 (delta)", usage.OutputTokens)
 	}
-	if usage.ReasoningOutputTokens != 100 {
-		t.Errorf("ReasoningOutputTokens = %d, want 100", usage.ReasoningOutputTokens)
+	if usage.ReasoningOutputTokens != 50 {
+		t.Errorf("ReasoningOutputTokens = %d, want 50 (delta)", usage.ReasoningOutputTokens)
 	}
-	if usage.TotalTokens != 2500 {
-		t.Errorf("TotalTokens = %d, want 2500", usage.TotalTokens)
+	// TotalTokens = billable = (1000-800) non-cached input + 200 output + 50 reasoning = 450
+	if usage.TotalTokens != 450 {
+		t.Errorf("TotalTokens = %d, want 450 (billable)", usage.TotalTokens)
 	}
 }
 
@@ -894,7 +902,11 @@ func TestCodexGetTodayTokenUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Session 1: has token data
+	// Session 1: two events (delta computed)
+	// Event 1: input=1000, cached=800, output=200, reasoning=50
+	// Event 2: input=3000, cached=2400, output=600, reasoning=150
+	// Delta: input=2000, cached=1600, output=400, reasoning=100
+	// Billable: (2000-1600) + 400 + 100 = 900
 	s1 := filepath.Join(todayDir, "session1.jsonl")
 	s1Content := `{"type":"session_meta","payload":{"id":"s1"}}
 ` + codexTokenCountJSON(1000, 800, 200, 50, 1250) + "\n" +
@@ -903,7 +915,9 @@ func TestCodexGetTodayTokenUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Session 2: has token data
+	// Session 2: single event (first == last)
+	// input=500, cached=400, output=100, reasoning=25
+	// Billable: (500-400) + 100 + 25 = 225
 	s2 := filepath.Join(todayDir, "session2.jsonl")
 	s2Content := `{"type":"session_meta","payload":{"id":"s2"}}
 ` + codexTokenCountJSON(500, 400, 100, 25, 625) + "\n"
@@ -927,23 +941,24 @@ func TestCodexGetTodayTokenUsage(t *testing.T) {
 		t.Fatal("expected non-nil token usage")
 	}
 
-	// Session 1 final: 3000+600+150 = 3750; Session 2: 500+100+25 = 625; Session 3: 0
-	// Sum: InputTokens = 3000+500 = 3500
-	if usage.InputTokens != 3500 {
-		t.Errorf("InputTokens = %d, want 3500", usage.InputTokens)
+	// Session 1 delta: input=2000, cached=1600, output=400, reasoning=100
+	// Session 2 single: input=500, cached=400, output=100, reasoning=25
+	// Sum: input=2500, cached=2000, output=500, reasoning=125
+	if usage.InputTokens != 2500 {
+		t.Errorf("InputTokens = %d, want 2500", usage.InputTokens)
 	}
-	if usage.CachedInputTokens != 2800 {
-		t.Errorf("CachedInputTokens = %d, want 2800", usage.CachedInputTokens)
+	if usage.CachedInputTokens != 2000 {
+		t.Errorf("CachedInputTokens = %d, want 2000", usage.CachedInputTokens)
 	}
-	if usage.OutputTokens != 700 {
-		t.Errorf("OutputTokens = %d, want 700", usage.OutputTokens)
+	if usage.OutputTokens != 500 {
+		t.Errorf("OutputTokens = %d, want 500", usage.OutputTokens)
 	}
-	if usage.ReasoningOutputTokens != 175 {
-		t.Errorf("ReasoningOutputTokens = %d, want 175", usage.ReasoningOutputTokens)
+	if usage.ReasoningOutputTokens != 125 {
+		t.Errorf("ReasoningOutputTokens = %d, want 125", usage.ReasoningOutputTokens)
 	}
-	// TotalTokens = 3750 + 625 = 4375
-	if usage.TotalTokens != 4375 {
-		t.Errorf("TotalTokens = %d, want 4375", usage.TotalTokens)
+	// TotalTokens = sum of billable: 900 + 225 = 1125
+	if usage.TotalTokens != 1125 {
+		t.Errorf("TotalTokens = %d, want 1125 (billable)", usage.TotalTokens)
 	}
 }
 
@@ -1031,7 +1046,9 @@ func TestCodexGetWeeklyTokenUsage(t *testing.T) {
 	tmpDir := t.TempDir()
 	now := time.Now()
 
-	// Create sessions across 3 days
+	// Create sessions across 3 days, each with a single event
+	// input=1000, cached=800, output=200, reasoning=50
+	// Billable per session: (1000-800) + 200 + 50 = 450
 	for i := 0; i < 3; i++ {
 		date := now.AddDate(0, 0, -i)
 		dateDir := filepath.Join(
@@ -1046,7 +1063,7 @@ func TestCodexGetWeeklyTokenUsage(t *testing.T) {
 
 		sessionPath := filepath.Join(dateDir, "session.jsonl")
 		content := `{"type":"session_meta","payload":{"id":"test"}}
-` + codexTokenCountJSON(1000, 800, 200, 50, int64(1250*(i+1))) + "\n"
+` + codexTokenCountJSON(1000, 800, 200, 50, 1250) + "\n"
 		if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -1061,10 +1078,10 @@ func TestCodexGetWeeklyTokenUsage(t *testing.T) {
 		t.Fatal("expected non-nil weekly usage")
 	}
 
-	// 1250 + 2500 + 3750 = 7500
-	expectedTotal := int64(1250 + 2500 + 3750)
+	// 3 sessions * 450 billable = 1350
+	expectedTotal := int64(3 * 450)
 	if usage.TotalTokens != expectedTotal {
-		t.Errorf("TotalTokens = %d, want %d", usage.TotalTokens, expectedTotal)
+		t.Errorf("TotalTokens = %d, want %d (billable)", usage.TotalTokens, expectedTotal)
 	}
 }
 
@@ -1092,6 +1109,8 @@ func TestCodexGetTodayTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Single event: input=5000, cached=4000, output=1000, reasoning=200
+	// Billable: (5000-4000) + 1000 + 200 = 2200
 	sessionPath := filepath.Join(todayDir, "session.jsonl")
 	content := `{"type":"session_meta","payload":{"id":"test"}}
 ` + codexTokenCountJSON(5000, 4000, 1000, 200, 6200) + "\n"
@@ -1104,8 +1123,8 @@ func TestCodexGetTodayTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTodayTokens error: %v", err)
 	}
-	if tokens != 6200 {
-		t.Errorf("GetTodayTokens = %d, want 6200", tokens)
+	if tokens != 2200 {
+		t.Errorf("GetTodayTokens = %d, want 2200 (billable)", tokens)
 	}
 }
 
@@ -1122,6 +1141,7 @@ func TestCodexGetWeeklyTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Single event: billable = 2200
 	sessionPath := filepath.Join(todayDir, "session.jsonl")
 	content := `{"type":"session_meta","payload":{"id":"test"}}
 ` + codexTokenCountJSON(5000, 4000, 1000, 200, 6200) + "\n"
@@ -1134,8 +1154,8 @@ func TestCodexGetWeeklyTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWeeklyTokens error: %v", err)
 	}
-	if tokens != 6200 {
-		t.Errorf("GetWeeklyTokens = %d, want 6200", tokens)
+	if tokens != 2200 {
+		t.Errorf("GetWeeklyTokens = %d, want 2200 (billable)", tokens)
 	}
 }
 

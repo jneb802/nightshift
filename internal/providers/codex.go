@@ -329,9 +329,11 @@ func (c *Codex) RefreshRateLimits() (*CodexRateLimits, error) {
 	return c.GetRateLimits()
 }
 
-// ParseSessionTokenUsage reads a Codex session JSONL file and extracts the
-// last total_token_usage from token_count events. Returns nil if no token
-// usage data is found (e.g. stub sessions that were started then exited).
+// ParseSessionTokenUsage reads a Codex session JSONL file and computes the
+// session's billable token usage. Codex total_token_usage is cumulative within
+// a session, so we take the delta between the first and last events. The result
+// excludes cached input tokens since those don't count against rate limits.
+// Returns nil if no token usage data is found (e.g. stub sessions).
 func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -339,7 +341,8 @@ func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
 	}
 	defer file.Close()
 
-	var latest *CodexTokenUsage
+	var first, latest *CodexTokenUsage
+	eventCount := 0
 	reader := bufio.NewReaderSize(file, 64*1024)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -350,6 +353,12 @@ func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
 				if jsonErr := json.Unmarshal(line, &entry); jsonErr == nil {
 					if entry.Payload != nil && entry.Payload.Type == "token_count" &&
 						entry.Payload.Info != nil && entry.Payload.Info.TotalTokenUsage != nil {
+						eventCount++
+						if first == nil {
+							// Copy the first value
+							v := *entry.Payload.Info.TotalTokenUsage
+							first = &v
+						}
 						latest = entry.Payload.Info.TotalTokenUsage
 					}
 				}
@@ -363,7 +372,31 @@ func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
 		}
 	}
 
-	return latest, nil
+	if latest == nil {
+		return nil, nil
+	}
+
+	// For a single event, use its values directly as the session usage
+	src := latest
+	if eventCount > 1 {
+		// Multiple events: compute delta (last - first = session usage)
+		src = &CodexTokenUsage{
+			InputTokens:           latest.InputTokens - first.InputTokens,
+			CachedInputTokens:     latest.CachedInputTokens - first.CachedInputTokens,
+			OutputTokens:          latest.OutputTokens - first.OutputTokens,
+			ReasoningOutputTokens: latest.ReasoningOutputTokens - first.ReasoningOutputTokens,
+		}
+	}
+
+	// Compute billable TotalTokens = non-cached input + output + reasoning
+	nonCachedInput := src.InputTokens - src.CachedInputTokens
+	return &CodexTokenUsage{
+		InputTokens:           src.InputTokens,
+		CachedInputTokens:     src.CachedInputTokens,
+		OutputTokens:          src.OutputTokens,
+		ReasoningOutputTokens: src.ReasoningOutputTokens,
+		TotalTokens:           nonCachedInput + src.OutputTokens + src.ReasoningOutputTokens,
+	}, nil
 }
 
 // FindMostRecentSessionWithData finds the most recent session file by
