@@ -11,12 +11,15 @@ import (
 
 	"github.com/marcusvorwaller/nightshift/internal/agents"
 	"github.com/marcusvorwaller/nightshift/internal/budget"
+	"github.com/marcusvorwaller/nightshift/internal/calibrator"
 	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcusvorwaller/nightshift/internal/db"
 	"github.com/marcusvorwaller/nightshift/internal/logging"
 	"github.com/marcusvorwaller/nightshift/internal/orchestrator"
 	"github.com/marcusvorwaller/nightshift/internal/providers"
 	"github.com/marcusvorwaller/nightshift/internal/state"
 	"github.com/marcusvorwaller/nightshift/internal/tasks"
+	"github.com/marcusvorwaller/nightshift/internal/trends"
 	"github.com/spf13/cobra"
 )
 
@@ -68,11 +71,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 	log.Info("starting nightshift run")
 
 	// Initialize state manager
-	st, err := state.New("")
+	database, err := db.Open(cfg.ExpandedDBPath())
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer database.Close()
+
+	st, err := state.New(database)
 	if err != nil {
 		return fmt.Errorf("init state: %w", err)
 	}
-	defer st.Save()
 
 	// Clear stale assignments older than 2 hours
 	cleared := st.ClearStaleAssignments(2 * time.Hour)
@@ -85,7 +93,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	codexProvider := providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex"))
 
 	// Initialize budget manager
-	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider)
+	cal := calibrator.New(database, cfg)
+	trend := trends.NewAnalyzer(database, cfg.Budget.SnapshotRetentionDays)
+	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
 
 	// Determine projects to run
 	projects, err := resolveProjects(cfg, projectPath)
@@ -119,15 +129,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Run execution
 	return executeRun(ctx, executeRunParams{
-		cfg:       cfg,
-		budgetMgr: budgetMgr,
-		selector:  selector,
-		orch:      orch,
-		st:        st,
-		projects:  projects,
+		cfg:        cfg,
+		budgetMgr:  budgetMgr,
+		selector:   selector,
+		orch:       orch,
+		st:         st,
+		projects:   projects,
 		taskFilter: taskFilter,
-		dryRun:    dryRun,
-		log:       log,
+		dryRun:     dryRun,
+		log:        log,
 	})
 }
 
@@ -276,11 +286,11 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 	fmt.Printf("Tasks: %d run, %d completed, %d failed\n", tasksRun, tasksCompleted, tasksFailed)
 
 	p.log.InfoCtx("run complete", map[string]any{
-		"duration":   duration.String(),
-		"tasks_run":  tasksRun,
-		"completed":  tasksCompleted,
-		"failed":     tasksFailed,
-		"projects":   len(p.projects),
+		"duration":  duration.String(),
+		"tasks_run": tasksRun,
+		"completed": tasksCompleted,
+		"failed":    tasksFailed,
+		"projects":  len(p.projects),
 	})
 
 	return nil

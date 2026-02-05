@@ -2,13 +2,17 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/marcusvorwaller/nightshift/internal/budget"
+	"github.com/marcusvorwaller/nightshift/internal/calibrator"
 	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcusvorwaller/nightshift/internal/db"
 	"github.com/marcusvorwaller/nightshift/internal/providers"
+	"github.com/marcusvorwaller/nightshift/internal/trends"
 )
 
 var budgetCmd = &cobra.Command{
@@ -35,6 +39,12 @@ func runBudget(filterProvider string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	database, err := db.Open(cfg.ExpandedDBPath())
+	if err != nil {
+		return fmt.Errorf("opening db: %w", err)
+	}
+	defer database.Close()
+
 	// Initialize providers
 	var claude *providers.Claude
 	var codex *providers.Codex
@@ -58,24 +68,13 @@ func runBudget(filterProvider string) error {
 	}
 
 	// Create budget manager
-	mgr := budget.NewManagerFromProviders(cfg, claude, codex)
+	cal := calibrator.New(database, cfg)
+	trend := trends.NewAnalyzer(database, cfg.Budget.SnapshotRetentionDays)
+	mgr := budget.NewManagerFromProviders(cfg, claude, codex, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
 
-	// Determine which providers to show
-	providerList := []string{}
-	if filterProvider != "" {
-		// Validate provider filter
-		if filterProvider != "claude" && filterProvider != "codex" {
-			return fmt.Errorf("unknown provider: %s (valid: claude, codex)", filterProvider)
-		}
-		providerList = append(providerList, filterProvider)
-	} else {
-		// Show all enabled providers
-		if cfg.Providers.Claude.Enabled {
-			providerList = append(providerList, "claude")
-		}
-		if cfg.Providers.Codex.Enabled {
-			providerList = append(providerList, "codex")
-		}
+	providerList, err := resolveProviderList(cfg, filterProvider)
+	if err != nil {
+		return err
 	}
 
 	if len(providerList) == 0 {
@@ -94,7 +93,7 @@ func runBudget(filterProvider string) error {
 
 	// Print status for each provider
 	for _, provName := range providerList {
-		if err := printProviderBudget(mgr, cfg, provName, codex); err != nil {
+		if err := printProviderBudget(mgr, cfg, provName, codex, cal); err != nil {
 			fmt.Printf("%s: error: %v\n\n", provName, err)
 			continue
 		}
@@ -104,13 +103,25 @@ func runBudget(filterProvider string) error {
 	return nil
 }
 
-func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName string, codex *providers.Codex) error {
+func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName string, codex *providers.Codex, source budget.BudgetSource) error {
 	result, err := mgr.CalculateAllowance(provName)
 	if err != nil {
 		return err
 	}
 
-	weeklyBudget := int64(cfg.GetProviderBudget(provName))
+	estimate := budget.BudgetEstimate{
+		WeeklyTokens: int64(cfg.GetProviderBudget(provName)),
+		Source:       "config",
+	}
+	if source != nil {
+		if resolved, err := source.GetBudget(provName); err == nil && resolved.WeeklyTokens > 0 {
+			estimate = resolved
+			if estimate.Source == "" {
+				estimate.Source = "calibrated"
+			}
+		}
+	}
+	weeklyBudget := estimate.WeeklyTokens
 
 	// Provider name header
 	fmt.Printf("[%s]\n", provName)
@@ -122,10 +133,13 @@ func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName strin
 		remaining := dailyBudget - usedTokens
 
 		fmt.Printf("  Mode:         %s\n", result.Mode)
-		fmt.Printf("  Weekly:       %s tokens\n", formatTokens64(weeklyBudget))
+		fmt.Printf("  Weekly:       %s tokens%s\n", formatTokens64(weeklyBudget), formatBudgetMeta(estimate))
 		fmt.Printf("  Daily:        %s tokens\n", formatTokens64(dailyBudget))
 		fmt.Printf("  Used today:   %s (%.1f%%)\n", formatTokens64(usedTokens), result.UsedPercent)
 		fmt.Printf("  Remaining:    %s tokens\n", formatTokens64(remaining))
+		if result.PredictedUsage > 0 {
+			fmt.Printf("  Daytime:      %s tokens reserved\n", formatTokens64(result.PredictedUsage))
+		}
 		fmt.Printf("  Reserve:      %s tokens\n", formatTokens64(result.ReserveAmount))
 		fmt.Printf("  Nightshift:   %s tokens available\n", formatTokens64(result.Allowance))
 	} else {
@@ -134,10 +148,13 @@ func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName strin
 		remaining := weeklyBudget - usedTokens
 
 		fmt.Printf("  Mode:         %s\n", result.Mode)
-		fmt.Printf("  Weekly:       %s tokens\n", formatTokens64(weeklyBudget))
+		fmt.Printf("  Weekly:       %s tokens%s\n", formatTokens64(weeklyBudget), formatBudgetMeta(estimate))
 		fmt.Printf("  Used:         %s (%.1f%%)\n", formatTokens64(usedTokens), result.UsedPercent)
 		fmt.Printf("  Remaining:    %s tokens\n", formatTokens64(remaining))
 		fmt.Printf("  Days left:    %d\n", result.RemainingDays)
+		if result.PredictedUsage > 0 {
+			fmt.Printf("  Daytime:      %s tokens reserved\n", formatTokens64(result.PredictedUsage))
+		}
 
 		if result.Multiplier > 1.0 {
 			fmt.Printf("  Multiplier:   %.1fx (end-of-week)\n", result.Multiplier)
@@ -169,6 +186,22 @@ func formatTokens64(tokens int64) string {
 		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
 	}
 	return fmt.Sprintf("%d", tokens)
+}
+
+func formatBudgetMeta(estimate budget.BudgetEstimate) string {
+	if estimate.Source == "" {
+		return ""
+	}
+
+	parts := []string{estimate.Source}
+	if estimate.Confidence != "" {
+		parts = append(parts, fmt.Sprintf("%s confidence", estimate.Confidence))
+	}
+	if estimate.SampleCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d samples", estimate.SampleCount))
+	}
+
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 func formatResetTime(t time.Time) string {

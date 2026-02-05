@@ -1,26 +1,18 @@
 package tasks
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcusvorwaller/nightshift/internal/db"
 	"github.com/marcusvorwaller/nightshift/internal/state"
 )
 
-func setupTestSelector(t *testing.T) (*Selector, *state.State, string) {
+func setupTestSelector(t *testing.T) (*Selector, *state.State) {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	cfg := &config.Config{
 		Tasks: config.TasksConfig{
@@ -30,12 +22,33 @@ func setupTestSelector(t *testing.T) (*Selector, *state.State, string) {
 		},
 	}
 
-	return NewSelector(cfg, st), st, tmpDir
+	return NewSelector(cfg, st), st
+}
+
+func newTestState(t *testing.T) *state.State {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+
+	st, err := state.New(database)
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+	return st
 }
 
 func TestScoreTask(t *testing.T) {
-	sel, st, tmpDir := setupTestSelector(t)
-	defer os.RemoveAll(tmpDir)
+	sel, st := setupTestSelector(t)
 
 	project := "/test/project"
 
@@ -69,16 +82,7 @@ func TestScoreTask(t *testing.T) {
 }
 
 func TestScoreTaskWithConfigPriority(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	// Set priority in config
 	cfg := &config.Config{
@@ -100,16 +104,7 @@ func TestScoreTaskWithConfigPriority(t *testing.T) {
 }
 
 func TestFilterEnabled(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	tests := []struct {
 		name     string
@@ -124,10 +119,10 @@ func TestFilterEnabled(t *testing.T) {
 			wantLen: 2,
 		},
 		{
-			name:     "explicit enabled list",
-			enabled:  []string{string(TaskLintFix)},
-			tasks:    []TaskDefinition{{Type: TaskLintFix}, {Type: TaskBugFinder}},
-			wantLen:  1,
+			name:    "explicit enabled list",
+			enabled: []string{string(TaskLintFix)},
+			tasks:   []TaskDefinition{{Type: TaskLintFix}, {Type: TaskBugFinder}},
+			wantLen: 1,
 		},
 		{
 			name:     "disabled takes precedence",
@@ -155,12 +150,11 @@ func TestFilterEnabled(t *testing.T) {
 }
 
 func TestFilterByBudget(t *testing.T) {
-	sel, _, tmpDir := setupTestSelector(t)
-	defer os.RemoveAll(tmpDir)
+	sel, _ := setupTestSelector(t)
 
 	tasks := []TaskDefinition{
-		{Type: TaskLintFix, CostTier: CostLow},         // 10-50k
-		{Type: TaskBugFinder, CostTier: CostHigh},      // 150-500k
+		{Type: TaskLintFix, CostTier: CostLow},                 // 10-50k
+		{Type: TaskBugFinder, CostTier: CostHigh},              // 150-500k
 		{Type: TaskMigrationRehearsal, CostTier: CostVeryHigh}, // 500k+
 	}
 
@@ -183,8 +177,7 @@ func TestFilterByBudget(t *testing.T) {
 }
 
 func TestFilterUnassigned(t *testing.T) {
-	sel, st, tmpDir := setupTestSelector(t)
-	defer os.RemoveAll(tmpDir)
+	sel, st := setupTestSelector(t)
 
 	project := "/test/project"
 	tasks := []TaskDefinition{
@@ -211,16 +204,7 @@ func TestFilterUnassigned(t *testing.T) {
 }
 
 func TestSelectNext(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	// Enable only specific tasks for predictable testing
 	cfg := &config.Config{
@@ -230,7 +214,7 @@ func TestSelectNext(t *testing.T) {
 				string(TaskDocsBackfill),
 			},
 			Priorities: map[string]int{
-				string(TaskLintFix):     5,
+				string(TaskLintFix):      5,
 				string(TaskDocsBackfill): 1,
 			},
 		},
@@ -253,8 +237,7 @@ func TestSelectNext(t *testing.T) {
 }
 
 func TestSelectNextNoBudget(t *testing.T) {
-	sel, _, tmpDir := setupTestSelector(t)
-	defer os.RemoveAll(tmpDir)
+	sel, _ := setupTestSelector(t)
 
 	// Budget too low for any task
 	task := sel.SelectNext(1000, "/test/project")
@@ -264,16 +247,7 @@ func TestSelectNextNoBudget(t *testing.T) {
 }
 
 func TestSelectAndAssign(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	cfg := &config.Config{
 		Tasks: config.TasksConfig{
@@ -304,16 +278,7 @@ func TestSelectAndAssign(t *testing.T) {
 }
 
 func TestSelectTopN(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	cfg := &config.Config{
 		Tasks: config.TasksConfig{
@@ -323,7 +288,7 @@ func TestSelectTopN(t *testing.T) {
 				string(TaskDeadCode),
 			},
 			Priorities: map[string]int{
-				string(TaskLintFix):     10,
+				string(TaskLintFix):      10,
 				string(TaskDocsBackfill): 5,
 				string(TaskDeadCode):     1,
 			},
@@ -358,16 +323,7 @@ func TestSelectTopN(t *testing.T) {
 }
 
 func TestStalenessAffectsSelection(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "selector-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	st, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	st := newTestState(t)
 
 	cfg := &config.Config{
 		Tasks: config.TasksConfig{
@@ -376,7 +332,7 @@ func TestStalenessAffectsSelection(t *testing.T) {
 				string(TaskDocsBackfill),
 			},
 			Priorities: map[string]int{
-				string(TaskLintFix):     1,  // Lower base priority
+				string(TaskLintFix):      1, // Lower base priority
 				string(TaskDocsBackfill): 1, // Same base priority
 			},
 		},
@@ -408,8 +364,7 @@ func TestMakeTaskID(t *testing.T) {
 }
 
 func TestSetContextMentions(t *testing.T) {
-	sel, st, tmpDir := setupTestSelector(t)
-	defer os.RemoveAll(tmpDir)
+	sel, st := setupTestSelector(t)
 
 	project := "/test/project"
 	st.RecordTaskRun(project, string(TaskLintFix))
@@ -427,8 +382,7 @@ func TestSetContextMentions(t *testing.T) {
 }
 
 func TestSetTaskSources(t *testing.T) {
-	sel, st, tmpDir := setupTestSelector(t)
-	defer os.RemoveAll(tmpDir)
+	sel, st := setupTestSelector(t)
 
 	project := "/test/project"
 	st.RecordTaskRun(project, string(TaskLintFix))
@@ -444,4 +398,3 @@ func TestSetTaskSources(t *testing.T) {
 		t.Errorf("Task source should add ~3.0 to score, got diff %f", score2-score1)
 	}
 }
-

@@ -8,18 +8,24 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/marcusvorwaller/nightshift/internal/agents"
 	"github.com/marcusvorwaller/nightshift/internal/budget"
+	"github.com/marcusvorwaller/nightshift/internal/calibrator"
 	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcusvorwaller/nightshift/internal/db"
 	"github.com/marcusvorwaller/nightshift/internal/logging"
 	"github.com/marcusvorwaller/nightshift/internal/orchestrator"
 	"github.com/marcusvorwaller/nightshift/internal/providers"
 	"github.com/marcusvorwaller/nightshift/internal/scheduler"
+	"github.com/marcusvorwaller/nightshift/internal/snapshots"
 	"github.com/marcusvorwaller/nightshift/internal/state"
 	"github.com/marcusvorwaller/nightshift/internal/tasks"
+	"github.com/marcusvorwaller/nightshift/internal/tmux"
+	"github.com/marcusvorwaller/nightshift/internal/trends"
 	"github.com/spf13/cobra"
 )
 
@@ -181,6 +187,12 @@ func runDaemonLoop(cfg *config.Config) error {
 
 	log.Info("daemon starting")
 
+	database, err := db.Open(cfg.ExpandedDBPath())
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer database.Close()
+
 	// Set up context with signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -201,8 +213,11 @@ func runDaemonLoop(cfg *config.Config) error {
 
 	// Add the main run job
 	sched.AddJob(func(jobCtx context.Context) error {
-		return runScheduledTasks(jobCtx, cfg, log)
+		return runScheduledTasks(jobCtx, cfg, database, log)
 	})
+
+	startSnapshotLoop(ctx, cfg, database, log)
+	startSnapshotPruneLoop(ctx, cfg, database, log)
 
 	// Start scheduler
 	if err := sched.Start(ctx); err != nil {
@@ -226,17 +241,16 @@ func runDaemonLoop(cfg *config.Config) error {
 }
 
 // runScheduledTasks executes the scheduled nightshift tasks.
-func runScheduledTasks(ctx context.Context, cfg *config.Config, log *logging.Logger) error {
+func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB, log *logging.Logger) error {
 	log.Info("scheduled run starting")
 	start := time.Now()
 
 	// Initialize state manager
-	st, err := state.New("")
+	st, err := state.New(database)
 	if err != nil {
 		log.Errorf("init state: %v", err)
 		return err
 	}
-	defer st.Save()
 
 	// Clear stale assignments older than 2 hours
 	cleared := st.ClearStaleAssignments(2 * time.Hour)
@@ -249,7 +263,9 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, log *logging.Log
 	codexProvider := providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex"))
 
 	// Initialize budget manager
-	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider)
+	cal := calibrator.New(database, cfg)
+	trend := trends.NewAnalyzer(database, cfg.Budget.SnapshotRetentionDays)
+	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
 
 	// Resolve projects
 	projects, err := resolveProjects(cfg, "")
@@ -319,9 +335,9 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, log *logging.Log
 		}
 
 		log.InfoCtx("processing project", map[string]any{
-			"project":  projectPath,
-			"tasks":    len(selectedTasks),
-			"budget":   allowance.Allowance,
+			"project": projectPath,
+			"tasks":   len(selectedTasks),
+			"budget":  allowance.Allowance,
 		})
 
 		// Execute each selected task
@@ -392,6 +408,116 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, log *logging.Log
 	})
 
 	return nil
+}
+
+type tmuxScraper struct{}
+
+func (tmuxScraper) ScrapeClaudeUsage(ctx context.Context) (tmux.UsageResult, error) {
+	return tmux.ScrapeClaudeUsage(ctx)
+}
+
+func (tmuxScraper) ScrapeCodexUsage(ctx context.Context) (tmux.UsageResult, error) {
+	return tmux.ScrapeCodexUsage(ctx)
+}
+
+func startSnapshotLoop(ctx context.Context, cfg *config.Config, database *db.DB, log *logging.Logger) {
+	interval, err := time.ParseDuration(cfg.Budget.SnapshotInterval)
+	if err != nil || interval <= 0 {
+		if err != nil {
+			log.Warnf("invalid snapshot interval %q: %v", cfg.Budget.SnapshotInterval, err)
+		}
+		return
+	}
+
+	go func() {
+		takeSnapshot(ctx, cfg, database, log)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				takeSnapshot(ctx, cfg, database, log)
+			}
+		}
+	}()
+}
+
+func startSnapshotPruneLoop(ctx context.Context, cfg *config.Config, database *db.DB, log *logging.Logger) {
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pruneSnapshots(ctx, cfg, database, log)
+			}
+		}
+	}()
+}
+
+func takeSnapshot(ctx context.Context, cfg *config.Config, database *db.DB, log *logging.Logger) {
+	scraper := snapshots.UsageScraper(nil)
+	if cfg.Budget.CalibrateEnabled && strings.ToLower(cfg.Budget.BillingMode) != "api" {
+		scraper = tmuxScraper{}
+	}
+
+	collector := snapshots.NewCollector(
+		database,
+		providers.NewClaudeWithPath(cfg.ExpandedProviderPath("claude")),
+		providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex")),
+		scraper,
+		weekStartDayFromConfig(cfg),
+	)
+
+	if cfg.Providers.Claude.Enabled {
+		snapshot, err := collector.TakeSnapshot(ctx, "claude")
+		if err != nil {
+			log.Warnf("snapshot claude: %v", err)
+		} else if snapshot.ScrapedPct != nil {
+			log.Infof("snapshot claude: %.1f%%", *snapshot.ScrapedPct)
+		} else {
+			log.Info("snapshot claude: local-only")
+		}
+	}
+
+	if cfg.Providers.Codex.Enabled {
+		snapshot, err := collector.TakeSnapshot(ctx, "codex")
+		if err != nil {
+			log.Warnf("snapshot codex: %v", err)
+		} else if snapshot.ScrapedPct != nil {
+			log.Infof("snapshot codex: %.1f%%", *snapshot.ScrapedPct)
+		} else {
+			log.Info("snapshot codex: local-only")
+		}
+	}
+}
+
+func pruneSnapshots(ctx context.Context, cfg *config.Config, database *db.DB, log *logging.Logger) {
+	collector := snapshots.NewCollector(database, nil, nil, nil, weekStartDayFromConfig(cfg))
+	deleted, err := collector.Prune(cfg.Budget.SnapshotRetentionDays)
+	if err != nil {
+		log.Warnf("snapshot prune: %v", err)
+		return
+	}
+	if deleted > 0 {
+		log.Infof("snapshot prune: deleted %d rows", deleted)
+	}
+}
+
+func weekStartDayFromConfig(cfg *config.Config) time.Weekday {
+	if cfg == nil {
+		return time.Monday
+	}
+	switch strings.ToLower(cfg.Budget.WeekStartDay) {
+	case "sunday":
+		return time.Sunday
+	default:
+		return time.Monday
+	}
 }
 
 func runDaemonStop(cmd *cobra.Command, args []string) error {

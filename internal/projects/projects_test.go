@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcusvorwaller/nightshift/internal/db"
 	"github.com/marcusvorwaller/nightshift/internal/state"
 )
 
@@ -123,11 +124,7 @@ func TestAllocateBudgetZeroBudget(t *testing.T) {
 }
 
 func TestFilterProcessedToday(t *testing.T) {
-	tmpDir := t.TempDir()
-	s, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	s := newTestState(t)
 
 	projects := []Project{
 		{Path: "/processed"},
@@ -136,7 +133,6 @@ func TestFilterProcessedToday(t *testing.T) {
 
 	// Mark one as processed
 	s.RecordProjectRun("/processed")
-	s.Save()
 
 	filtered := FilterProcessedToday(projects, s)
 	if len(filtered) != 1 {
@@ -148,11 +144,7 @@ func TestFilterProcessedToday(t *testing.T) {
 }
 
 func TestFilterNotProcessedSince(t *testing.T) {
-	tmpDir := t.TempDir()
-	s, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	s := newTestState(t)
 
 	projects := []Project{
 		{Path: "/recent"},
@@ -161,7 +153,6 @@ func TestFilterNotProcessedSince(t *testing.T) {
 
 	// Mark /recent as processed
 	s.RecordProjectRun("/recent")
-	s.Save()
 
 	// Filter for 1 hour threshold - /stale has never been processed
 	filtered := FilterNotProcessedSince(projects, s, 1*time.Hour)
@@ -230,11 +221,7 @@ func TestMergeProjectConfigNoFile(t *testing.T) {
 }
 
 func TestSelectNext(t *testing.T) {
-	tmpDir := t.TempDir()
-	s, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	s := newTestState(t)
 
 	projects := []Project{
 		{Path: "/low", Priority: 1},
@@ -251,18 +238,13 @@ func TestSelectNext(t *testing.T) {
 }
 
 func TestSelectNextAllProcessed(t *testing.T) {
-	tmpDir := t.TempDir()
-	s, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	s := newTestState(t)
 
 	projects := []Project{
 		{Path: "/proj1", Priority: 1},
 	}
 
 	s.RecordProjectRun("/proj1")
-	s.Save()
 
 	next := SelectNext(projects, s)
 	if next != nil {
@@ -366,11 +348,7 @@ func TestResolverWithGlobPattern(t *testing.T) {
 }
 
 func TestGetProjectSummaries(t *testing.T) {
-	tmpDir := t.TempDir()
-	s, err := state.New(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create state: %v", err)
-	}
+	s := newTestState(t)
 
 	projects := []Project{
 		{Path: "/proj1", Priority: 5},
@@ -379,7 +357,6 @@ func TestGetProjectSummaries(t *testing.T) {
 
 	// Record a run for proj1
 	s.RecordProjectRun("/proj1")
-	s.Save()
 
 	summaries := GetProjectSummaries(projects, s)
 	if len(summaries) != 2 {
@@ -393,4 +370,26 @@ func TestGetProjectSummaries(t *testing.T) {
 	if summaries[0].RunCount != 1 {
 		t.Errorf("proj1 run count = %d, want 1", summaries[0].RunCount)
 	}
+}
+
+func newTestState(t *testing.T) *state.State {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+
+	st, err := state.New(database)
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+	return st
 }

@@ -41,12 +41,18 @@ type WindowConfig struct {
 
 // BudgetConfig controls token budget allocation.
 type BudgetConfig struct {
-	Mode                 string         `mapstructure:"mode"`                    // daily | weekly
-	MaxPercent           int            `mapstructure:"max_percent"`             // Max % of budget per run
-	AggressiveEndOfWeek  bool           `mapstructure:"aggressive_end_of_week"`  // Ramp up in last 2 days
-	ReservePercent       int            `mapstructure:"reserve_percent"`         // Always keep in reserve
-	WeeklyTokens         int            `mapstructure:"weekly_tokens"`           // Fallback weekly budget
-	PerProvider          map[string]int `mapstructure:"per_provider"`            // Per-provider overrides
+	Mode                  string         `mapstructure:"mode"`                    // daily | weekly
+	MaxPercent            int            `mapstructure:"max_percent"`             // Max % of budget per run
+	AggressiveEndOfWeek   bool           `mapstructure:"aggressive_end_of_week"`  // Ramp up in last 2 days
+	ReservePercent        int            `mapstructure:"reserve_percent"`         // Always keep in reserve
+	WeeklyTokens          int            `mapstructure:"weekly_tokens"`           // Fallback weekly budget
+	PerProvider           map[string]int `mapstructure:"per_provider"`            // Per-provider overrides
+	BillingMode           string         `mapstructure:"billing_mode"`            // subscription | api
+	CalibrateEnabled      bool           `mapstructure:"calibrate_enabled"`       // Enable budget calibration
+	SnapshotInterval      string         `mapstructure:"snapshot_interval"`       // Interval for snapshots
+	SnapshotRetentionDays int            `mapstructure:"snapshot_retention_days"` // Snapshot retention in days
+	WeekStartDay          string         `mapstructure:"week_start_day"`          // monday | sunday
+	DBPath                string         `mapstructure:"db_path"`                 // Override DB path
 }
 
 // ProvidersConfig defines AI provider settings.
@@ -65,8 +71,8 @@ type ProviderConfig struct {
 type ProjectConfig struct {
 	Path     string   `mapstructure:"path"`
 	Priority int      `mapstructure:"priority"`
-	Tasks    []string `mapstructure:"tasks"`  // Task overrides for this project
-	Config   string   `mapstructure:"config"` // Per-project config file
+	Tasks    []string `mapstructure:"tasks"`   // Task overrides for this project
+	Config   string   `mapstructure:"config"`  // Per-project config file
 	Pattern  string   `mapstructure:"pattern"` // Glob pattern for discovery
 	Exclude  []string `mapstructure:"exclude"` // Paths to exclude
 }
@@ -114,20 +120,30 @@ type ReportingConfig struct {
 
 // Default values for configuration.
 const (
-	DefaultBudgetMode          = "daily"
-	DefaultMaxPercent          = 10
-	DefaultReservePercent      = 5
-	DefaultWeeklyTokens        = 700000
-	DefaultLogLevel            = "info"
-	DefaultLogFormat           = "json"
-	DefaultClaudeDataPath      = "~/.claude"
-	DefaultCodexDataPath       = "~/.codex"
+	DefaultBudgetMode        = "daily"
+	DefaultMaxPercent        = 10
+	DefaultReservePercent    = 5
+	DefaultWeeklyTokens      = 700000
+	DefaultBillingMode       = "subscription"
+	DefaultSnapshotInterval  = "30m"
+	DefaultSnapshotRetention = 90
+	DefaultWeekStartDay      = "monday"
+	DefaultLogLevel          = "info"
+	DefaultLogFormat         = "json"
+	DefaultClaudeDataPath    = "~/.claude"
+	DefaultCodexDataPath     = "~/.codex"
 )
 
 // DefaultLogPath returns the default log path.
 func DefaultLogPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "nightshift", "logs")
+}
+
+// DefaultDBPath returns the default database path.
+func DefaultDBPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "nightshift", "nightshift.db")
 }
 
 // GlobalConfigPath returns the global config path.
@@ -185,6 +201,8 @@ func LoadFromPaths(projectPath, globalPath string) (*Config, error) {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
+	normalizeBudgetConfig(&cfg)
+
 	return &cfg, nil
 }
 
@@ -196,6 +214,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("budget.reserve_percent", DefaultReservePercent)
 	v.SetDefault("budget.weekly_tokens", DefaultWeeklyTokens)
 	v.SetDefault("budget.aggressive_end_of_week", false)
+	v.SetDefault("budget.billing_mode", DefaultBillingMode)
+	v.SetDefault("budget.calibrate_enabled", true)
+	v.SetDefault("budget.snapshot_interval", DefaultSnapshotInterval)
+	v.SetDefault("budget.snapshot_retention_days", DefaultSnapshotRetention)
+	v.SetDefault("budget.week_start_day", DefaultWeekStartDay)
+	v.SetDefault("budget.db_path", DefaultDBPath())
 
 	// Provider defaults
 	v.SetDefault("providers.claude.enabled", true)
@@ -258,13 +282,16 @@ func expandPath(path string) string {
 
 // Validation errors
 var (
-	ErrCronAndInterval      = errors.New("cron and interval are mutually exclusive")
-	ErrInvalidBudgetMode    = errors.New("budget mode must be 'daily' or 'weekly'")
-	ErrInvalidMaxPercent    = errors.New("max_percent must be between 1 and 100")
-	ErrInvalidReservePercent = errors.New("reserve_percent must be between 0 and 100")
-	ErrInvalidLogLevel      = errors.New("log level must be debug, info, warn, or error")
-	ErrInvalidLogFormat     = errors.New("log format must be json or text")
-	ErrNoSchedule           = errors.New("either cron or interval must be specified")
+	ErrCronAndInterval          = errors.New("cron and interval are mutually exclusive")
+	ErrInvalidBudgetMode        = errors.New("budget mode must be 'daily' or 'weekly'")
+	ErrInvalidBillingMode       = errors.New("billing mode must be 'subscription' or 'api'")
+	ErrInvalidWeekStartDay      = errors.New("week_start_day must be 'monday' or 'sunday'")
+	ErrInvalidMaxPercent        = errors.New("max_percent must be between 1 and 100")
+	ErrInvalidReservePercent    = errors.New("reserve_percent must be between 0 and 100")
+	ErrInvalidSnapshotRetention = errors.New("snapshot_retention_days must be >= 0")
+	ErrInvalidLogLevel          = errors.New("log level must be debug, info, warn, or error")
+	ErrInvalidLogFormat         = errors.New("log format must be json or text")
+	ErrNoSchedule               = errors.New("either cron or interval must be specified")
 )
 
 // Validate checks configuration for errors.
@@ -279,6 +306,22 @@ func Validate(cfg *Config) error {
 		return ErrInvalidBudgetMode
 	}
 
+	// Billing mode validation
+	if cfg.Budget.BillingMode != "" {
+		mode := strings.ToLower(cfg.Budget.BillingMode)
+		if mode != "subscription" && mode != "api" {
+			return ErrInvalidBillingMode
+		}
+	}
+
+	// Week start day validation
+	if cfg.Budget.WeekStartDay != "" {
+		day := strings.ToLower(cfg.Budget.WeekStartDay)
+		if day != "monday" && day != "sunday" {
+			return ErrInvalidWeekStartDay
+		}
+	}
+
 	// MaxPercent validation
 	if cfg.Budget.MaxPercent < 0 || cfg.Budget.MaxPercent > 100 {
 		return ErrInvalidMaxPercent
@@ -287,6 +330,10 @@ func Validate(cfg *Config) error {
 	// ReservePercent validation
 	if cfg.Budget.ReservePercent < 0 || cfg.Budget.ReservePercent > 100 {
 		return ErrInvalidReservePercent
+	}
+
+	if cfg.Budget.SnapshotRetentionDays < 0 {
+		return ErrInvalidSnapshotRetention
 	}
 
 	// Log level validation
@@ -305,6 +352,15 @@ func Validate(cfg *Config) error {
 	}
 
 	return nil
+}
+
+func normalizeBudgetConfig(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if strings.EqualFold(cfg.Budget.BillingMode, "api") {
+		cfg.Budget.CalibrateEnabled = false
+	}
 }
 
 // Helper methods for accessing configuration
@@ -346,6 +402,11 @@ func (c *Config) GetTaskPriority(task string) int {
 // ExpandedLogPath returns the log path with ~ expanded.
 func (c *Config) ExpandedLogPath() string {
 	return expandPath(c.Logging.Path)
+}
+
+// ExpandedDBPath returns the database path with ~ expanded.
+func (c *Config) ExpandedDBPath() string {
+	return expandPath(c.Budget.DBPath)
 }
 
 // ExpandedProviderPath returns the provider data path with ~ expanded.

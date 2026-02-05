@@ -8,6 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcusvorwaller/nightshift/internal/db"
 	"github.com/marcusvorwaller/nightshift/internal/state"
 )
 
@@ -21,7 +23,18 @@ Shows the last N runs (default: 5) or today's activity summary.`,
 		last, _ := cmd.Flags().GetInt("last")
 		today, _ := cmd.Flags().GetBool("today")
 
-		st, err := state.New("")
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		database, err := db.Open(cfg.ExpandedDBPath())
+		if err != nil {
+			return fmt.Errorf("opening db: %w", err)
+		}
+		defer database.Close()
+
+		st, err := state.New(database)
 		if err != nil {
 			return fmt.Errorf("loading state: %w", err)
 		}

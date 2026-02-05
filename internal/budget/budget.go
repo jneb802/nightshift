@@ -29,41 +29,88 @@ type CodexUsageProvider interface {
 	GetResetTime(mode string) (time.Time, error)
 }
 
+// BudgetEstimate provides a resolved weekly budget with metadata.
+type BudgetEstimate struct {
+	WeeklyTokens int64
+	Source       string
+	Confidence   string
+	SampleCount  int
+	Variance     float64
+}
+
+// BudgetSource provides calibrated or external budget estimates.
+type BudgetSource interface {
+	GetBudget(provider string) (BudgetEstimate, error)
+}
+
+// TrendAnalyzer predicts near-term usage to protect daytime budget.
+type TrendAnalyzer interface {
+	PredictDaytimeUsage(provider string, now time.Time, weeklyBudget int64) (int64, error)
+}
+
+// Option configures a Manager.
+type Option func(*Manager)
+
 // Manager calculates and manages token budget allocation across providers.
 type Manager struct {
-	cfg     *config.Config
-	claude  ClaudeUsageProvider
-	codex   CodexUsageProvider
-	nowFunc func() time.Time // for testing
+	cfg          *config.Config
+	claude       ClaudeUsageProvider
+	codex        CodexUsageProvider
+	budgetSource BudgetSource
+	trend        TrendAnalyzer
+	nowFunc      func() time.Time // for testing
 }
 
 // NewManager creates a budget manager with the given configuration and providers.
-func NewManager(cfg *config.Config, claude ClaudeUsageProvider, codex CodexUsageProvider) *Manager {
-	return &Manager{
+func NewManager(cfg *config.Config, claude ClaudeUsageProvider, codex CodexUsageProvider, opts ...Option) *Manager {
+	mgr := &Manager{
 		cfg:     cfg,
 		claude:  claude,
 		codex:   codex,
 		nowFunc: time.Now,
 	}
+	for _, opt := range opts {
+		opt(mgr)
+	}
+	return mgr
+}
+
+// WithBudgetSource injects a BudgetSource for calibrated budgets.
+func WithBudgetSource(source BudgetSource) Option {
+	return func(m *Manager) {
+		m.budgetSource = source
+	}
+}
+
+// WithTrendAnalyzer injects a trend analyzer for predicted daytime usage.
+func WithTrendAnalyzer(analyzer TrendAnalyzer) Option {
+	return func(m *Manager) {
+		m.trend = analyzer
+	}
 }
 
 // AllowanceResult contains the calculated budget allowance and metadata.
 type AllowanceResult struct {
-	Allowance      int64   // Final token allowance for this run
-	BudgetBase     int64   // Base budget (daily or remaining weekly)
-	UsedPercent    float64 // Current used percentage
-	ReserveAmount  int64   // Tokens reserved
-	Mode           string  // "daily" or "weekly"
-	RemainingDays  int     // Days until reset (weekly mode only)
-	Multiplier     float64 // End-of-week multiplier (weekly mode only)
+	Allowance         int64   // Final token allowance for this run
+	BudgetBase        int64   // Base budget (daily or remaining weekly)
+	UsedPercent       float64 // Current used percentage
+	ReserveAmount     int64   // Tokens reserved
+	PredictedUsage    int64   // Predicted remaining usage today
+	Mode              string  // "daily" or "weekly"
+	RemainingDays     int     // Days until reset (weekly mode only)
+	Multiplier        float64 // End-of-week multiplier (weekly mode only)
+	BudgetSource      string  // calibrated, api, config
+	BudgetConfidence  string  // none, low, medium, high
+	BudgetSampleCount int     // number of samples used
 }
 
 // CalculateAllowance determines how many tokens nightshift can use for this run.
 func (m *Manager) CalculateAllowance(provider string) (*AllowanceResult, error) {
-	weeklyBudget := int64(m.cfg.GetProviderBudget(provider))
-	if weeklyBudget <= 0 {
-		return nil, fmt.Errorf("invalid weekly budget for provider %s: %d", provider, weeklyBudget)
+	estimate, err := m.resolveBudget(provider)
+	if err != nil {
+		return nil, err
 	}
+	weeklyBudget := estimate.WeeklyTokens
 
 	usedPercent, err := m.GetUsedPercent(provider)
 	if err != nil {
@@ -102,6 +149,23 @@ func (m *Manager) CalculateAllowance(provider string) (*AllowanceResult, error) 
 
 	// Apply reserve enforcement
 	result = m.applyReserve(result, reservePercent)
+	if m.trend != nil {
+		predicted, err := m.trend.PredictDaytimeUsage(provider, m.nowFunc(), weeklyBudget)
+		if err != nil {
+			return nil, fmt.Errorf("predict daytime usage: %w", err)
+		}
+		if predicted > 0 {
+			result.PredictedUsage = predicted
+			if result.Allowance > predicted {
+				result.Allowance -= predicted
+			} else {
+				result.Allowance = 0
+			}
+		}
+	}
+	result.BudgetSource = estimate.Source
+	result.BudgetConfidence = estimate.Confidence
+	result.BudgetSampleCount = estimate.SampleCount
 
 	return result, nil
 }
@@ -161,6 +225,36 @@ func (m *Manager) applyReserve(result *AllowanceResult, reservePercent int) *All
 	result.ReserveAmount = int64(reserveAmount)
 	result.Allowance = int64(math.Max(0, float64(result.Allowance)-reserveAmount))
 	return result
+}
+
+func (m *Manager) resolveBudget(provider string) (BudgetEstimate, error) {
+	estimate := BudgetEstimate{
+		WeeklyTokens: int64(m.cfg.GetProviderBudget(provider)),
+		Source:       "config",
+	}
+
+	if m.budgetSource != nil {
+		loaded, err := m.budgetSource.GetBudget(provider)
+		if err != nil {
+			return estimate, fmt.Errorf("get budget estimate: %w", err)
+		}
+		if loaded.WeeklyTokens > 0 {
+			estimate = loaded
+			if estimate.Source == "" {
+				estimate.Source = "calibrated"
+			}
+		}
+	}
+
+	if estimate.WeeklyTokens <= 0 {
+		return estimate, fmt.Errorf("invalid weekly budget for provider %s: %d", provider, estimate.WeeklyTokens)
+	}
+
+	if estimate.Source == "" {
+		estimate.Source = "config"
+	}
+
+	return estimate, nil
 }
 
 // GetUsedPercent retrieves the used percentage from the appropriate provider.
@@ -236,7 +330,11 @@ func (m *Manager) Summary(provider string) (string, error) {
 		return "", err
 	}
 
-	weeklyBudget := m.cfg.GetProviderBudget(provider)
+	estimate, err := m.resolveBudget(provider)
+	if err != nil {
+		return "", err
+	}
+	weeklyBudget := estimate.WeeklyTokens
 
 	if result.Mode == "daily" {
 		return fmt.Sprintf(
@@ -292,7 +390,7 @@ func (t *Tracker) Remaining() int64 {
 }
 
 // NewManagerFromProviders is a convenience constructor that accepts the concrete provider types.
-func NewManagerFromProviders(cfg *config.Config, claude *providers.Claude, codex *providers.Codex) *Manager {
+func NewManagerFromProviders(cfg *config.Config, claude *providers.Claude, codex *providers.Codex, opts ...Option) *Manager {
 	var claudeProvider ClaudeUsageProvider
 	var codexProvider CodexUsageProvider
 
@@ -303,5 +401,5 @@ func NewManagerFromProviders(cfg *config.Config, claude *providers.Claude, codex
 		codexProvider = codex
 	}
 
-	return NewManager(cfg, claudeProvider, codexProvider)
+	return NewManager(cfg, claudeProvider, codexProvider, opts...)
 }

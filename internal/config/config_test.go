@@ -31,6 +31,30 @@ func TestValidate_InvalidBudgetMode(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidBillingMode(t *testing.T) {
+	cfg := &Config{
+		Budget: BudgetConfig{
+			BillingMode: "metered",
+		},
+	}
+	err := Validate(cfg)
+	if err != ErrInvalidBillingMode {
+		t.Errorf("expected ErrInvalidBillingMode, got %v", err)
+	}
+}
+
+func TestValidate_InvalidWeekStartDay(t *testing.T) {
+	cfg := &Config{
+		Budget: BudgetConfig{
+			WeekStartDay: "friday",
+		},
+	}
+	err := Validate(cfg)
+	if err != ErrInvalidWeekStartDay {
+		t.Errorf("expected ErrInvalidWeekStartDay, got %v", err)
+	}
+}
+
 func TestValidate_InvalidMaxPercent(t *testing.T) {
 	cfg := &Config{
 		Budget: BudgetConfig{
@@ -124,6 +148,21 @@ func TestGetProviderBudget(t *testing.T) {
 	// Test fallback to weekly tokens
 	if got := cfg.GetProviderBudget("codex"); got != 700000 {
 		t.Errorf("GetProviderBudget(codex) = %d, want 700000", got)
+	}
+}
+
+func TestNormalizeBudgetConfig(t *testing.T) {
+	cfg := &Config{
+		Budget: BudgetConfig{
+			BillingMode:      "api",
+			CalibrateEnabled: true,
+		},
+	}
+
+	normalizeBudgetConfig(cfg)
+
+	if cfg.Budget.CalibrateEnabled {
+		t.Errorf("expected CalibrateEnabled=false for api billing mode")
 	}
 }
 

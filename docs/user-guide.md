@@ -139,6 +139,44 @@ tasks:
     - idea-generator
 ```
 
+### Budget Controls
+
+Budget controls apply globally unless overridden per provider.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `budget.mode` | string | `daily` | `daily` or `weekly` usage model. |
+| `budget.max_percent` | int | `10` | Max % of budget per run. |
+| `budget.reserve_percent` | int | `5` | Always keep this % in reserve. |
+| `budget.billing_mode` | string | `subscription` | `subscription` or `api`. |
+| `budget.calibrate_enabled` | bool | `true` | Enable subscription calibration via snapshots. |
+| `budget.snapshot_interval` | duration | `30m` | Automatic snapshot cadence. |
+| `budget.snapshot_retention_days` | int | `90` | Snapshot retention window. |
+| `budget.week_start_day` | string | `monday` | Week boundary for calibration. |
+| `budget.db_path` | string | `~/.local/share/nightshift/nightshift.db` | Override DB path. |
+
+### Example: Subscription Users
+
+```yaml
+budget:
+  billing_mode: subscription
+  calibrate_enabled: true
+  snapshot_interval: 30m
+  snapshot_retention_days: 90
+  week_start_day: monday
+```
+
+### Example: API Billing
+
+```yaml
+budget:
+  billing_mode: api
+  weekly_tokens: 1000000
+  per_provider:
+    claude: 1000000
+    codex: 500000
+```
+
 ### Budget Modes
 
 **Daily Mode** (recommended for most users):
@@ -166,6 +204,8 @@ budget:
     claude: 700000
     codex: 500000
 ```
+
+`weekly_tokens` and `per_provider` are authoritative for `billing_mode: api`. For subscription users, they act as a fallback until calibration has enough snapshots.
 
 ### Multi-Project Setup
 
@@ -237,9 +277,28 @@ nightshift install systemd
 
 # Any platform (cron)
 nightshift install cron
+```
 
-# Remove the service
+---
+
+## Uninstalling
+
+1. Remove the system service.
+
+```bash
 nightshift uninstall
+```
+
+2. Remove configs and data (optional).
+
+```bash
+rm -rf ~/.config/nightshift ~/.local/share/nightshift
+```
+
+3. Remove the binary from your PATH.
+
+```bash
+rm "$(which nightshift)"
 ```
 
 ---
@@ -296,20 +355,68 @@ nightshift budget
 nightshift budget --provider claude
 ```
 
-Example output:
+Example output (subscription):
 
 ```
-Budget Status (mode: daily)
+Budget Status (mode: weekly)
 ================================
 
 [claude]
-  Weekly:       700.0K tokens
-  Daily:        100.0K tokens
-  Used today:   45.2K (45.2%)
-  Remaining:    54.8K tokens
-  Reserve:      5.0K tokens
-  Nightshift:   4.5K tokens available
-  Progress:     [##############----------------] 45.2%
+  Mode:         weekly
+  Weekly:       700.0K tokens (calibrated, high confidence, 8 samples)
+  Used:         315.0K (45.0%)
+  Remaining:    385.0K tokens
+  Days left:    4
+  Daytime:      50.0K tokens reserved
+  Reserve:      35.0K tokens
+  Nightshift:   50.0K tokens available
+  Progress:     [#############-----------------] 45.0%
+```
+
+Example output (API billing):
+
+```
+Budget Status (mode: weekly)
+================================
+
+[codex]
+  Mode:         weekly
+  Weekly:       1.0M tokens (api, high confidence)
+  Used:         120.0K (12.0%)
+  Remaining:    880.0K tokens
+  Days left:    5
+  Reserve:      50.0K tokens
+  Nightshift:   125.0K tokens available
+  Progress:     [###---------------------------] 12.0%
+```
+
+### Budget Calibration
+
+Nightshift infers subscription budgets by correlating local token counts with provider usage percentages.
+
+Formula: `inferred_budget = local_tokens / (scraped_pct / 100)`.
+
+Confidence levels:
+- `low`: 1-2 samples or high variance.
+- `medium`: stable signal across several snapshots.
+- `high`: consistent signal across a week or more.
+
+> **Note**: Calibration uses tmux to scrape usage percentages. If tmux is unavailable, snapshots are local-only and budgets fall back to config values.
+
+### Snapshot History
+
+```bash
+# Capture a snapshot now
+nightshift budget snapshot
+
+# Capture a local-only snapshot (skip tmux)
+nightshift budget snapshot --local-only
+
+# Show recent snapshots
+nightshift budget history -n 20
+
+# Show calibration status
+nightshift budget calibrate
 ```
 
 ### Morning Summary
@@ -413,6 +520,17 @@ nightshift init --global  # Create global config
 - Increase `max_percent` in config
 - Wait for budget reset (check reset time in output)
 
+**"Calibration confidence is low"**
+- Run `nightshift budget snapshot` a few times to collect samples
+- Ensure tmux is installed so usage percentages are available
+- Keep snapshots running for at least a few days
+
+**"tmux not found"**
+- Install tmux or set `budget.billing_mode: api` if you pay per token
+
+**"Week boundary looks wrong"**
+- Set `budget.week_start_day` to `monday` or `sunday`
+
 **"Provider not available"**
 - Ensure Claude/Codex CLI is installed and in PATH
 - Check API key environment variables are set
@@ -450,8 +568,10 @@ Nightshift includes safety features:
 | Run logs | `~/.local/share/nightshift/logs/nightshift-YYYY-MM-DD.log` |
 | Audit logs | `~/.local/share/nightshift/audit/audit-YYYY-MM-DD.jsonl` |
 | Summaries | `~/.local/share/nightshift/summaries/` |
-| State | `~/.local/share/nightshift/state/state.json` |
+| Database | `~/.local/share/nightshift/nightshift.db` |
 | PID file | `~/.local/share/nightshift/nightshift.pid` |
+
+If `state/state.json` exists from older versions, Nightshift migrates it to the SQLite database and renames the file to `state.json.migrated`.
 
 ### Getting Help
 
