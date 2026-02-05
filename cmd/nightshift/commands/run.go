@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/marcus/nightshift/internal/logging"
 	"github.com/marcus/nightshift/internal/orchestrator"
 	"github.com/marcus/nightshift/internal/providers"
+	"github.com/marcus/nightshift/internal/reporting"
 	"github.com/marcus/nightshift/internal/state"
 	"github.com/marcus/nightshift/internal/tasks"
 	"github.com/marcus/nightshift/internal/trends"
@@ -113,7 +115,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	selector := tasks.NewSelector(cfg, st)
 
 	// Run execution
-	return executeRun(ctx, executeRunParams{
+	params := executeRunParams{
 		cfg:        cfg,
 		budgetMgr:  budgetMgr,
 		selector:   selector,
@@ -122,7 +124,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		taskFilter: taskFilter,
 		dryRun:     dryRun,
 		log:        log,
-	})
+	}
+	if !dryRun {
+		params.report = newRunReport(time.Now(), calculateRunBudgetStart(cfg, budgetMgr, log))
+	}
+	return executeRun(ctx, params)
 }
 
 type executeRunParams struct {
@@ -133,6 +139,7 @@ type executeRunParams struct {
 	projects   []string
 	taskFilter string
 	dryRun     bool
+	report     *runReport
 	log        *logging.Logger
 }
 
@@ -144,7 +151,7 @@ type providerChoice struct {
 }
 
 // selectProvider picks the best available provider with budget remaining.
-// Order: claude first, then codex as fallback.
+// Order is determined by providers.preference (default: claude, codex).
 func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.Logger) (*providerChoice, error) {
 	type candidate struct {
 		name      string
@@ -153,19 +160,25 @@ func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.
 	}
 
 	var candidates []candidate
-	if cfg.Providers.Claude.Enabled {
-		candidates = append(candidates, candidate{
-			name:      "claude",
-			binary:    "claude",
-			makeAgent: func() agents.Agent { return newClaudeAgentFromConfig(cfg) },
-		})
-	}
-	if cfg.Providers.Codex.Enabled {
-		candidates = append(candidates, candidate{
-			name:      "codex",
-			binary:    "codex",
-			makeAgent: func() agents.Agent { return newCodexAgentFromConfig(cfg) },
-		})
+	for _, name := range providerPreference(cfg) {
+		switch name {
+		case "claude":
+			if cfg.Providers.Claude.Enabled {
+				candidates = append(candidates, candidate{
+					name:      "claude",
+					binary:    "claude",
+					makeAgent: func() agents.Agent { return newClaudeAgentFromConfig(cfg) },
+				})
+			}
+		case "codex":
+			if cfg.Providers.Codex.Enabled {
+				candidates = append(candidates, candidate{
+					name:      "codex",
+					binary:    "codex",
+					makeAgent: func() agents.Agent { return newCodexAgentFromConfig(cfg) },
+				})
+			}
+		}
 	}
 
 	if len(candidates) == 0 {
@@ -194,6 +207,31 @@ func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.
 	}
 
 	return nil, fmt.Errorf("no providers available with remaining budget")
+}
+
+func providerPreference(cfg *config.Config) []string {
+	defaults := []string{"claude", "codex"}
+	if cfg == nil || len(cfg.Providers.Preference) == 0 {
+		return defaults
+	}
+
+	seen := map[string]bool{}
+	out := make([]string, 0, len(cfg.Providers.Preference))
+	for _, pref := range cfg.Providers.Preference {
+		name := strings.ToLower(strings.TrimSpace(pref))
+		if name == "" || seen[name] {
+			continue
+		}
+		if name != "claude" && name != "codex" {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return defaults
+	}
+	return out
 }
 
 func executeRun(ctx context.Context, p executeRunParams) error {
@@ -258,6 +296,15 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 
 		if len(selectedTasks) == 0 {
 			fmt.Println("No tasks available within budget")
+			if p.report != nil {
+				p.report.addTask(reporting.TaskResult{
+					Project:    projectPath,
+					TaskType:   "",
+					Title:      "No tasks selected",
+					Status:     "skipped",
+					SkipReason: "no tasks available within budget",
+				})
+			}
 			continue
 		}
 
@@ -306,6 +353,16 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 				tasksFailed++
 				fmt.Printf("  FAILED: %v\n", err)
 				p.log.Errorf("task %s failed: %v", taskInstance.ID, err)
+				if p.report != nil {
+					p.report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "failed",
+						TokensUsed: 0,
+						Duration:   result.Duration,
+					})
+				}
 				continue
 			}
 
@@ -315,12 +372,43 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 				tasksCompleted++
 				fmt.Printf("  COMPLETED in %d iteration(s) (%s)\n", result.Iterations, result.Duration)
 				p.st.RecordTaskRun(projectPath, string(scoredTask.Definition.Type))
+				if p.report != nil {
+					_, maxTok := scoredTask.Definition.EstimatedTokens()
+					p.report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "completed",
+						TokensUsed: maxTok,
+						Duration:   result.Duration,
+					})
+				}
 			case orchestrator.StatusAbandoned:
 				tasksFailed++
 				fmt.Printf("  ABANDONED after %d iteration(s): %s\n", result.Iterations, result.Error)
+				if p.report != nil {
+					p.report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "failed",
+						SkipReason: result.Error,
+						Duration:   result.Duration,
+					})
+				}
 			default:
 				tasksFailed++
 				fmt.Printf("  FAILED: %s\n", result.Error)
+				if p.report != nil {
+					p.report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "failed",
+						SkipReason: result.Error,
+						Duration:   result.Duration,
+					})
+				}
 			}
 		}
 
@@ -341,6 +429,10 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 		"failed":    tasksFailed,
 		"projects":  len(p.projects),
 	})
+
+	if p.report != nil {
+		p.report.finalize(p.cfg, p.log)
+	}
 
 	return nil
 }

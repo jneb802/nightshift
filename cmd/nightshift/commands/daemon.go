@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/marcus/nightshift/internal/agents"
 	"github.com/marcus/nightshift/internal/budget"
 	"github.com/marcus/nightshift/internal/calibrator"
 	"github.com/marcus/nightshift/internal/config"
@@ -20,6 +19,7 @@ import (
 	"github.com/marcus/nightshift/internal/logging"
 	"github.com/marcus/nightshift/internal/orchestrator"
 	"github.com/marcus/nightshift/internal/providers"
+	"github.com/marcus/nightshift/internal/reporting"
 	"github.com/marcus/nightshift/internal/scheduler"
 	"github.com/marcus/nightshift/internal/snapshots"
 	"github.com/marcus/nightshift/internal/state"
@@ -267,6 +267,8 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 	trend := trends.NewAnalyzer(database, cfg.Budget.SnapshotRetentionDays)
 	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
 
+	report := newRunReport(time.Now(), calculateRunBudgetStart(cfg, budgetMgr, log))
+
 	// Resolve projects
 	projects, err := resolveProjects(cfg, "")
 	if err != nil {
@@ -281,23 +283,6 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 
 	// Create task selector
 	selector := tasks.NewSelector(cfg, st)
-
-	// Initialize agent
-	agent := newClaudeAgentFromConfig(cfg)
-	if !agent.Available() {
-		log.Error("claude CLI not available")
-		return fmt.Errorf("claude CLI not found")
-	}
-
-	// Create orchestrator
-	orch := orchestrator.New(
-		orchestrator.WithAgent(agent),
-		orchestrator.WithConfig(orchestrator.Config{
-			MaxIterations: 3,
-			AgentTimeout:  30 * time.Minute,
-		}),
-		orchestrator.WithLogger(logging.Component("orchestrator")),
-	)
 
 	var tasksRun, tasksCompleted, tasksFailed int
 
@@ -316,28 +301,48 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 			continue
 		}
 
-		// Calculate budget allowance
-		allowance, err := budgetMgr.CalculateAllowance("claude")
+		// Select the best available provider with remaining budget
+		choice, err := selectProvider(cfg, budgetMgr, log)
 		if err != nil {
-			log.Warnf("budget calc error: %v", err)
-			continue
+			log.Infof("no provider available: %v", err)
+			break
 		}
 
+		allowance := choice.allowance
 		if allowance.Allowance <= 0 {
 			log.Info("budget exhausted")
 			break
 		}
 
+		orch := orchestrator.New(
+			orchestrator.WithAgent(choice.agent),
+			orchestrator.WithConfig(orchestrator.Config{
+				MaxIterations: 3,
+				AgentTimeout:  30 * time.Minute,
+			}),
+			orchestrator.WithLogger(logging.Component("orchestrator")),
+		)
+
 		// Select tasks
 		selectedTasks := selector.SelectTopN(allowance.Allowance, projectPath, 5)
 		if len(selectedTasks) == 0 {
+			if report != nil {
+				report.addTask(reporting.TaskResult{
+					Project:    projectPath,
+					TaskType:   "",
+					Title:      "No tasks selected",
+					Status:     "skipped",
+					SkipReason: "no tasks available within budget",
+				})
+			}
 			continue
 		}
 
 		log.InfoCtx("processing project", map[string]any{
-			"project": projectPath,
-			"tasks":   len(selectedTasks),
-			"budget":  allowance.Allowance,
+			"project":  projectPath,
+			"tasks":    len(selectedTasks),
+			"budget":   allowance.Allowance,
+			"provider": choice.name,
 		})
 
 		// Execute each selected task
@@ -371,6 +376,16 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 			if err != nil {
 				tasksFailed++
 				log.Errorf("task %s failed: %v", taskInstance.ID, err)
+				if report != nil {
+					report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "failed",
+						TokensUsed: 0,
+						Duration:   result.Duration,
+					})
+				}
 				continue
 			}
 
@@ -384,12 +399,43 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 					"iterations": result.Iterations,
 					"duration":   result.Duration.String(),
 				})
+				if report != nil {
+					_, maxTok := scoredTask.Definition.EstimatedTokens()
+					report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "completed",
+						TokensUsed: maxTok,
+						Duration:   result.Duration,
+					})
+				}
 			case orchestrator.StatusAbandoned:
 				tasksFailed++
 				log.Warnf("task %s abandoned: %s", taskInstance.ID, result.Error)
+				if report != nil {
+					report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "failed",
+						SkipReason: result.Error,
+						Duration:   result.Duration,
+					})
+				}
 			default:
 				tasksFailed++
 				log.Errorf("task %s failed: %s", taskInstance.ID, result.Error)
+				if report != nil {
+					report.addTask(reporting.TaskResult{
+						Project:    projectPath,
+						TaskType:   string(scoredTask.Definition.Type),
+						Title:      scoredTask.Definition.Name,
+						Status:     "failed",
+						SkipReason: result.Error,
+						Duration:   result.Duration,
+					})
+				}
 			}
 		}
 
@@ -406,6 +452,10 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 		"failed":    tasksFailed,
 		"projects":  len(projects),
 	})
+
+	if report != nil {
+		report.finalize(cfg, log)
+	}
 
 	return nil
 }

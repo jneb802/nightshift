@@ -30,20 +30,25 @@ Manual install:
 go install github.com/marcus/nightshift/cmd/nightshift@latest
 ```
 
-## Quick Start
+## Getting Started
+
+After installing, run the guided setup:
 
 ```bash
-# Interactive setup (global config + snapshot + daemon)
 nightshift setup
+```
 
-# Initialize config in current directory
-nightshift init
+This walks you through provider configuration, project selection, budget calibration, and daemon setup. Once complete you can preview what nightshift will do:
 
-# Run maintenance tasks
+```bash
+nightshift preview
+nightshift budget
+```
+
+Or kick off a run immediately:
+
+```bash
 nightshift run
-
-# Check status of last run
-nightshift status
 ```
 
 ## Common CLI Usage
@@ -53,6 +58,8 @@ nightshift status
 nightshift preview -n 3
 nightshift preview --long
 nightshift preview --explain
+nightshift preview --plain
+nightshift preview --json
 nightshift preview --write ./nightshift-prompts
 
 # Guided global setup
@@ -83,6 +90,8 @@ nightshift task show lint-fix --prompt-only
 nightshift task run lint-fix --provider claude
 nightshift task run lint-fix --provider codex --dry-run
 ```
+
+If `gum` is available, preview output is shown through the gum pager. Use `--plain` to disable.
 
 Useful flags:
 - `nightshift run --dry-run` to simulate tasks without changes
@@ -142,6 +151,9 @@ budget:
   snapshot_interval: 30m
 
 providers:
+  preference:
+    - claude
+    - codex
   claude:
     enabled: true
     data_path: "~/.claude"

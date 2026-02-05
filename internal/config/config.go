@@ -59,6 +59,8 @@ type BudgetConfig struct {
 type ProvidersConfig struct {
 	Claude ProviderConfig `mapstructure:"claude"`
 	Codex  ProviderConfig `mapstructure:"codex"`
+	// Preference sets provider order (e.g., ["claude", "codex"]).
+	Preference []string `mapstructure:"preference"`
 }
 
 // ProviderConfig defines settings for a single AI provider.
@@ -226,6 +228,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("budget.db_path", DefaultDBPath())
 
 	// Provider defaults
+	v.SetDefault("providers.preference", []string{"claude", "codex"})
 	v.SetDefault("providers.claude.enabled", true)
 	v.SetDefault("providers.claude.data_path", DefaultClaudeDataPath)
 	v.SetDefault("providers.claude.dangerously_skip_permissions", true)
@@ -354,6 +357,24 @@ func Validate(cfg *Config) error {
 	if cfg.Logging.Format != "" {
 		if cfg.Logging.Format != "json" && cfg.Logging.Format != "text" {
 			return ErrInvalidLogFormat
+		}
+	}
+
+	// Provider preference validation
+	if len(cfg.Providers.Preference) > 0 {
+		seen := map[string]bool{}
+		for _, pref := range cfg.Providers.Preference {
+			name := strings.ToLower(strings.TrimSpace(pref))
+			if name == "" {
+				continue
+			}
+			if name != "claude" && name != "codex" {
+				return fmt.Errorf("providers.preference contains unknown provider: %s", pref)
+			}
+			if seen[name] {
+				return fmt.Errorf("providers.preference contains duplicate provider: %s", pref)
+			}
+			seen[name] = true
 		}
 	}
 

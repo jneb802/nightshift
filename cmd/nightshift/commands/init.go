@@ -143,6 +143,9 @@ budget:
 
 # Provider configuration (usage tracking)
 providers:
+  preference:
+    - claude
+    - codex
   claude:
     enabled: true
     data_path: "~/.claude"       # Path to Claude Code data directory

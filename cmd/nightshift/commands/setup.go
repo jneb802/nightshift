@@ -1,9 +1,9 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,6 +62,7 @@ const (
 	stepSchedule
 	stepSnapshot
 	stepPreview
+	stepPath
 	stepDaemon
 	stepFinish
 )
@@ -110,9 +111,20 @@ type setupModel struct {
 	previewOutput  string
 	previewErr     error
 
+	pathCursor       int
+	pathOptions      []pathOption
+	pathErr          string
+	pathApplied      bool
+	pathStatus       string
+	pathShell        string
+	pathConfig       string
+	pathSourceHint   string
+	nightshiftInPath bool
+
 	daemonCursor int
 	serviceType  string
 	serviceState serviceState
+	daemonAction string
 
 	spinner spinner.Model
 }
@@ -137,6 +149,20 @@ type previewMsg struct {
 	output string
 	err    error
 }
+
+type pathOption struct {
+	label   string
+	action  pathAction
+	dir     string
+	install bool
+}
+
+type pathAction int
+
+const (
+	pathActionSkip pathAction = iota
+	pathActionAdd
+)
 
 var (
 	styleHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
@@ -181,6 +207,8 @@ func newSetupModel() (*setupModel, error) {
 
 	preset := setup.PresetBalanced
 	taskItems := makeTaskItems(cfg, projects, preset)
+	_, err = execLookPath("nightshift")
+	nightshiftInPath := err == nil
 
 	model := &setupModel{
 		step:             stepWelcome,
@@ -199,6 +227,7 @@ func newSetupModel() (*setupModel, error) {
 		scheduleCron:     "0 2 * * *",
 		scheduleInput:    scheduleInput,
 		spinner:          spin,
+		nightshiftInPath: nightshiftInPath,
 	}
 
 	return model, nil
@@ -246,8 +275,13 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case stepPreview:
 			if !m.previewRunning && msg.String() == "enter" {
-				return m, m.setStep(stepDaemon)
+				if m.nightshiftInPath {
+					return m, m.setStep(stepDaemon)
+				}
+				return m, m.setStep(stepPath)
 			}
+		case stepPath:
+			return m.handlePathInput(msg)
 		case stepDaemon:
 			return m.handleDaemonInput(msg)
 		case stepFinish:
@@ -282,7 +316,8 @@ func (m *setupModel) View() string {
 		b.WriteString(renderEnvChecks(m.cfg))
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepConfig:
-		b.WriteString(styleAccent.Render("Global config\n"))
+		b.WriteString(styleAccent.Render("Global config"))
+		b.WriteString("\n")
 		b.WriteString(fmt.Sprintf("  %s\n", m.configPath))
 		if m.configExist {
 			b.WriteString("  Status: found (will update in place)\n")
@@ -292,7 +327,8 @@ func (m *setupModel) View() string {
 		b.WriteString("\nThis wizard only writes the global config. Per-project configs are optional.\n")
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepProjects:
-		b.WriteString(styleAccent.Render("Projects (global config)\n"))
+		b.WriteString(styleAccent.Render("Projects (global config)"))
+		b.WriteString("\n")
 		b.WriteString("Use ↑/↓ to navigate, 'a' to add, 'd' to delete.\n")
 		if m.projectEditing {
 			b.WriteString("\nAdd project path:\n")
@@ -320,7 +356,8 @@ func (m *setupModel) View() string {
 		}
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepBudget:
-		b.WriteString(styleAccent.Render("Budget defaults\n"))
+		b.WriteString(styleAccent.Render("Budget defaults"))
+		b.WriteString("\n")
 		b.WriteString("Edit with e.\n")
 		b.WriteString("Use ↑/↓ to select a field.\n\n")
 		renderBudgetFields(&b, m)
@@ -338,14 +375,16 @@ func (m *setupModel) View() string {
 		}
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepSafety:
-		b.WriteString(styleAccent.Render("Approvals & sandbox\n"))
+		b.WriteString(styleAccent.Render("Approvals & sandbox"))
+		b.WriteString("\n")
 		b.WriteString("These flags reduce interactive prompts. They’re convenient but carry more risk.\n")
 		b.WriteString("We default them ON; you can turn them off here.\n\n")
 		b.WriteString("Use ↑/↓ to select, space to toggle.\n\n")
 		renderSafetyFields(&b, m)
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepTaskPreset:
-		b.WriteString(styleAccent.Render("Task presets (derived from registry)\n"))
+		b.WriteString(styleAccent.Render("Task presets (derived from registry)"))
+		b.WriteString("\n")
 		b.WriteString("Use ↑/↓ to select, Enter to continue.\n\n")
 		presets := []setup.Preset{setup.PresetBalanced, setup.PresetSafe, setup.PresetAggressive}
 		for i, preset := range presets {
@@ -360,7 +399,8 @@ func (m *setupModel) View() string {
 			b.WriteString(fmt.Sprintf(" %s %s\n", cursor, label))
 		}
 	case stepTaskSelect:
-		b.WriteString(styleAccent.Render("Tasks\n"))
+		b.WriteString(styleAccent.Render("Tasks"))
+		b.WriteString("\n")
 		b.WriteString("Space to toggle, ↑/↓ to move.\n\n")
 		for i, item := range m.taskItems {
 			cursor := " "
@@ -375,7 +415,8 @@ func (m *setupModel) View() string {
 		}
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepSchedule:
-		b.WriteString(styleAccent.Render("Schedule\n"))
+		b.WriteString(styleAccent.Render("Schedule"))
+		b.WriteString("\n")
 		b.WriteString("Use ↑/↓ to select, e to edit. We’ll explain each field.\n\n")
 		renderScheduleFields(&b, m)
 		if help := scheduleFieldHelp(m.scheduleCursor, m.scheduleMode); help != "" {
@@ -397,7 +438,8 @@ func (m *setupModel) View() string {
 		}
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepSnapshot:
-		b.WriteString(styleAccent.Render("Snapshot step\n"))
+		b.WriteString(styleAccent.Render("Snapshot step"))
+		b.WriteString("\n")
 		b.WriteString("We’ll take a quick usage snapshot so Nightshift can set safe budgets.\n")
 		b.WriteString("No tasks run yet. This just reads local usage (and optional tmux scrape).\n\n")
 		if m.snapshotRunning {
@@ -413,8 +455,9 @@ func (m *setupModel) View() string {
 			b.WriteString("\nPress Enter to continue.\n")
 		}
 	case stepPreview:
-		b.WriteString(styleAccent.Render("Preview step\n"))
-		b.WriteString("Next up: we’ll preview the first scheduled run and show each plan prompt.\n")
+		b.WriteString(styleAccent.Render("Preview step"))
+		b.WriteString("\n")
+		b.WriteString("Next up: we’ll preview the first scheduled run with the summary view.\n")
 		b.WriteString("Prompts are shortened for readability (use `nightshift preview --long` for full text).\n\n")
 		if m.previewRunning {
 			b.WriteString(m.spinner.View() + "\n")
@@ -426,8 +469,44 @@ func (m *setupModel) View() string {
 			}
 			b.WriteString("\nPress Enter to continue.\n")
 		}
+	case stepPath:
+		b.WriteString(styleAccent.Render("Add Nightshift to PATH"))
+		b.WriteString("\n")
+		if m.nightshiftInPath {
+			b.WriteString("Nightshift is already available in PATH.\n\n")
+			b.WriteString("Press Enter to continue.\n")
+			break
+		}
+		b.WriteString("Nightshift isn’t in PATH yet. The daemon and CLI shortcuts need it there.\n")
+		if m.pathShell != "" && m.pathConfig != "" {
+			b.WriteString(fmt.Sprintf("Shell: %s\n", m.pathShell))
+			b.WriteString(fmt.Sprintf("Config: %s\n", m.pathConfig))
+		}
+		b.WriteString("\nSelect action:\n")
+		for i, option := range m.pathOptions {
+			cursor := " "
+			if i == m.pathCursor {
+				cursor = ">"
+			}
+			b.WriteString(fmt.Sprintf(" %s %s\n", cursor, option.label))
+		}
+		if m.pathErr != "" {
+			b.WriteString("\nError: " + m.pathErr + "\n")
+		}
+		if m.pathStatus != "" {
+			b.WriteString("\n" + m.pathStatus + "\n")
+			if m.pathSourceHint != "" {
+				b.WriteString("Run: " + m.pathSourceHint + "\n")
+			}
+		}
+		if m.pathApplied {
+			b.WriteString("\nPress Enter to continue.\n")
+		} else {
+			b.WriteString("\nPress Enter to apply.\n")
+		}
 	case stepDaemon:
-		b.WriteString(styleAccent.Render("Daemon setup\n\n"))
+		b.WriteString(styleAccent.Render("Daemon setup"))
+		b.WriteString("\n\n")
 		b.WriteString(fmt.Sprintf("Service: %s\n", m.serviceType))
 		if m.serviceState.installed {
 			b.WriteString("Status: installed\n")
@@ -449,12 +528,17 @@ func (m *setupModel) View() string {
 		}
 		b.WriteString("\nPress Enter to apply.\n")
 	case stepFinish:
-		b.WriteString(styleAccent.Render("Setup complete\n"))
-		b.WriteString("Nightshift is configured and ready to run.\n\n")
+		b.WriteString(styleAccent.Render("Setup complete"))
+		b.WriteString("\n")
+		b.WriteString(m.finishSummaryLine())
+		b.WriteString("\n\n")
+		if status := m.finishDaemonStatus(); status != "" {
+			b.WriteString(status + "\n\n")
+		}
 		b.WriteString("What to expect:\n")
-		b.WriteString(fmt.Sprintf("  Summary report: %s\n", reporting.DefaultSummaryPath(time.Now())))
-		b.WriteString("  CLI status: `nightshift status --today` or `nightshift logs`\n")
-		b.WriteString("  Safety: Nightshift never writes to your primary branch. Expect PRs or branches.\n")
+		for _, line := range m.finishExpectations() {
+			b.WriteString("  " + line + "\n")
+		}
 		b.WriteString("\nPress Enter to exit.\n")
 	}
 
@@ -474,10 +558,82 @@ func (m *setupModel) setStep(step setupStep) tea.Cmd {
 		m.previewOutput = ""
 		m.previewErr = nil
 		return runPreviewCmd(m.cfg, m.projects)
+	case stepPath:
+		m.preparePathStep()
 	case stepDaemon:
 		m.serviceType, m.serviceState = detectServiceState()
 	}
 	return nil
+}
+
+func (m *setupModel) preparePathStep() {
+	m.pathErr = ""
+	m.pathStatus = ""
+	m.pathApplied = false
+	m.pathCursor = 0
+
+	if m.nightshiftInPath {
+		m.pathOptions = nil
+		return
+	}
+
+	shellName, configPath := detectShellConfig()
+	m.pathShell = shellName
+	m.pathConfig = configPath
+	m.pathSourceHint = sourceHint(shellName, configPath)
+
+	exeDir := filepath.Dir(mustExecutablePath())
+	exeDir = expandPath(exeDir)
+	if absDir, err := filepath.Abs(exeDir); err == nil {
+		exeDir = absDir
+	}
+
+	goBinDir, goOK := detectGoBinDir()
+	if goOK {
+		goBinDir = expandPath(goBinDir)
+		if absDir, err := filepath.Abs(goBinDir); err == nil {
+			goBinDir = absDir
+		}
+	}
+
+	home, _ := os.UserHomeDir()
+	localBinDir := filepath.Join(home, ".local", "bin")
+	if absDir, err := filepath.Abs(localBinDir); err == nil {
+		localBinDir = absDir
+	}
+
+	var options []pathOption
+	if goOK && goBinDir != "" {
+		options = append(options, pathOption{
+			label:   fmt.Sprintf("Install to %s and add to PATH (recommended)", goBinDir),
+			action:  pathActionAdd,
+			dir:     goBinDir,
+			install: true,
+		})
+	} else {
+		options = append(options, pathOption{
+			label:   fmt.Sprintf("Install to %s and add to PATH", localBinDir),
+			action:  pathActionAdd,
+			dir:     localBinDir,
+			install: true,
+		})
+	}
+
+	if exeDir != "" && exeDir != goBinDir && exeDir != localBinDir {
+		options = append(options, pathOption{
+			label:   fmt.Sprintf("Add current binary dir to PATH (%s)", exeDir),
+			action:  pathActionAdd,
+			dir:     exeDir,
+			install: false,
+		})
+	}
+
+	options = append(options, pathOption{
+		label:  "Skip (I'll handle PATH myself)",
+		action: pathActionSkip,
+	})
+
+	m.pathOptions = options
 }
 
 func (m *setupModel) handleProjectsInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -688,6 +844,47 @@ func (m *setupModel) handleScheduleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *setupModel) handlePathInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pathApplied || m.nightshiftInPath {
+		if msg.String() == "enter" {
+			return m, m.setStep(stepDaemon)
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if m.pathCursor > 0 {
+			m.pathCursor--
+		}
+	case "down", "j":
+		if m.pathCursor < len(m.pathOptions)-1 {
+			m.pathCursor++
+		}
+	case "enter":
+		if len(m.pathOptions) == 0 {
+			m.pathErr = "no PATH options available"
+			return m, nil
+		}
+		option := m.pathOptions[m.pathCursor]
+		m.pathErr = ""
+		m.pathStatus = ""
+		if option.action == pathActionSkip {
+			m.pathApplied = true
+			m.pathStatus = "Skipped PATH update."
+			return m, nil
+		}
+		if err := m.applyPathOption(option); err != nil {
+			m.pathErr = err.Error()
+			return m, nil
+		}
+		m.pathApplied = true
+		m.nightshiftInPath = true
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m *setupModel) handleDaemonInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -704,6 +901,7 @@ func (m *setupModel) handleDaemonInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.serviceState.detail = err.Error()
 			return m, nil
 		}
+		m.daemonAction = action
 		return m, m.setStep(stepFinish)
 	}
 	return m, nil
@@ -918,10 +1116,258 @@ func (m *setupModel) applyDaemonAction(action string) error {
 	}
 }
 
+func (m *setupModel) finishSummaryLine() string {
+	switch m.daemonAction {
+	case "Stop daemon", "Remove service", "Skip":
+		return "Nightshift is configured, but the daemon is not running."
+	case "Leave as-is":
+		if m.serviceState.running {
+			return "Nightshift is configured and the daemon is running."
+		}
+		if m.serviceState.installed {
+			return "Nightshift is configured, but the daemon is stopped."
+		}
+		return "Nightshift is configured, but no daemon service is installed."
+	default:
+		return "Nightshift is configured and ready to run."
+	}
+}
+
+func (m *setupModel) finishDaemonStatus() string {
+	switch m.daemonAction {
+	case "Install and enable daemon":
+		return "Daemon status: installed and started."
+	case "Start daemon":
+		return "Daemon status: started."
+	case "Stop daemon":
+		return "Daemon status: stopped."
+	case "Remove service":
+		return "Daemon status: service removed."
+	case "Skip":
+		return "Daemon status: not installed."
+	case "Leave as-is":
+		if m.serviceState.running {
+			return "Daemon status: running (unchanged)."
+		}
+		if m.serviceState.installed {
+			return "Daemon status: installed but stopped (unchanged)."
+		}
+		return "Daemon status: not installed."
+	default:
+		return ""
+	}
+}
+
+func (m *setupModel) finishExpectations() []string {
+	lines := []string{
+		fmt.Sprintf("Summary report: %s", reporting.DefaultSummaryPath(time.Now())),
+		fmt.Sprintf("Run report: %s", reporting.DefaultRunReportPath(time.Now())),
+		"CLI status: `nightshift status --today` or `nightshift logs`",
+		"Safety: Nightshift never writes to your primary branch. Expect PRs or branches.",
+	}
+
+	switch m.daemonAction {
+	case "Stop daemon", "Remove service", "Skip":
+		lines = append([]string{
+			"Nightshift will not run automatically until the daemon is started.",
+			"Run manually: `nightshift run`.",
+			"Start the daemon later: `nightshift daemon start` (or re-run setup to install a service).",
+		}, lines...)
+	case "Leave as-is":
+		if !m.serviceState.running {
+			lines = append([]string{
+				"Nightshift will not run automatically until the daemon is started.",
+				"Run manually: `nightshift run`.",
+				"Start the daemon later: `nightshift daemon start` (or re-run setup to install a service).",
+			}, lines...)
+		}
+	}
+
+	return lines
+}
+
+func (m *setupModel) applyPathOption(option pathOption) error {
+	if option.dir == "" {
+		return fmt.Errorf("missing target path")
+	}
+
+	var statusParts []string
+	if option.install {
+		dest, err := installNightshiftBinary(option.dir)
+		if err != nil {
+			return err
+		}
+		statusParts = append(statusParts, fmt.Sprintf("Installed binary to %s.", dest))
+	}
+
+	changed, err := ensurePathInShell(m.pathConfig, m.pathShell, option.dir)
+	if err != nil {
+		return err
+	}
+	if changed {
+		statusParts = append(statusParts, fmt.Sprintf("Added %s to PATH in %s.", option.dir, m.pathConfig))
+	} else {
+		statusParts = append(statusParts, fmt.Sprintf("%s already present in %s.", option.dir, m.pathConfig))
+	}
+
+	m.pathStatus = strings.Join(statusParts, " ")
+	return nil
+}
+
+func detectShellConfig() (string, string) {
+	shell := filepath.Base(os.Getenv("SHELL"))
+	home, _ := os.UserHomeDir()
+	switch shell {
+	case "zsh":
+		return "zsh", filepath.Join(home, ".zshrc")
+	case "bash":
+		bashProfile := filepath.Join(home, ".bash_profile")
+		if _, err := os.Stat(bashProfile); err == nil {
+			return "bash", bashProfile
+		}
+		return "bash", filepath.Join(home, ".bashrc")
+	case "fish":
+		return "fish", filepath.Join(home, ".config", "fish", "config.fish")
+	default:
+		if shell == "" {
+			shell = "sh"
+		}
+		return shell, filepath.Join(home, ".profile")
+	}
+}
+
+func detectGoBinDir() (string, bool) {
+	if _, err := exec.LookPath("go"); err != nil {
+		return "", false
+	}
+	out, err := exec.Command("go", "env", "GOBIN").Output()
+	if err == nil {
+		gobin := strings.TrimSpace(string(out))
+		if gobin != "" {
+			return gobin, true
+		}
+	}
+	out, err = exec.Command("go", "env", "GOPATH").Output()
+	if err != nil {
+		return "", false
+	}
+	gopath := strings.TrimSpace(string(out))
+	if gopath == "" {
+		return "", false
+	}
+	if strings.Contains(gopath, string(os.PathListSeparator)) {
+		gopath = strings.Split(gopath, string(os.PathListSeparator))[0]
+	}
+	return filepath.Join(gopath, "bin"), true
+}
+
+func sourceHint(shell, configPath string) string {
+	if configPath == "" {
+		return ""
+	}
+	if shell == "fish" {
+		return fmt.Sprintf("source %s", configPath)
+	}
+	return fmt.Sprintf("source %s", configPath)
+}
+
+func ensurePathInShell(configPath, shell, dir string) (bool, error) {
+	if configPath == "" {
+		return false, fmt.Errorf("missing shell config path")
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return false, err
+	}
+
+	dir = expandPath(dir)
+	line := pathExportLine(shell, dir)
+
+	var existing string
+	if data, err := os.ReadFile(configPath); err == nil {
+		existing = string(data)
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+
+	if strings.Contains(existing, dir) {
+		return false, nil
+	}
+
+	if len(existing) > 0 && !strings.HasSuffix(existing, "\n") {
+		existing += "\n"
+	}
+	existing += line + "\n"
+	return true, os.WriteFile(configPath, []byte(existing), 0644)
+}
+
+func pathExportLine(shell, dir string) string {
+	switch shell {
+	case "fish":
+		return fmt.Sprintf("set -gx PATH \"%s\" $PATH", dir)
+	default:
+		return fmt.Sprintf("export PATH=\"$PATH:%s\"", dir)
+	}
+}
+
+func installNightshiftBinary(targetDir string) (string, error) {
+	exePath := mustExecutablePath()
+	if exePath == "" {
+		return "", fmt.Errorf("unable to locate nightshift binary")
+	}
+
+	targetDir = expandPath(targetDir)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return "", err
+	}
+
+	dest := filepath.Join(targetDir, "nightshift")
+	if samePath(exePath, dest) {
+		return dest, nil
+	}
+
+	if err := copyFile(exePath, dest); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.EvalSymlinks(a)
+	bb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return aa == bb
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = out.Close()
+	}()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	return os.Chmod(dst, 0755)
+}
+
 func renderEnvChecks(cfg *config.Config) string {
 	var b strings.Builder
 	if _, err := execLookPath("nightshift"); err != nil {
-		b.WriteString(fmt.Sprintf("  %s %s\n", styleWarn.Render("Heads up:"), "nightshift not found in PATH yet. Setup will still work, but the daemon needs it in PATH."))
+		b.WriteString(fmt.Sprintf("  %s %s\n", styleWarn.Render("Heads up:"), "nightshift not found in PATH yet. Setup can add it for you."))
 	} else {
 		b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "nightshift is in PATH"))
 	}
@@ -1144,11 +1590,11 @@ func buildPreviewOutput(cfg *config.Config, projects []string, runs int, longPro
 	}
 	defer database.Close()
 
-	var buf bytes.Buffer
-	if err := renderPreview(&buf, cfg, database, projects, "", runs, longPrompt, writeDir, false, nil); err != nil {
+	result, err := buildPreviewResult(cfg, database, projects, "", runs, writeDir, nil, false)
+	if err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	return renderPreviewText(result, previewTextOptions{LongPrompt: longPrompt, Explain: false}), nil
 }
 
 func computeWindowEnd(start scheduler.TimeOfDay, interval time.Duration, cycles int) scheduler.TimeOfDay {

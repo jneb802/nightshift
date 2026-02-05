@@ -103,6 +103,14 @@ nightshift install cron
 
 ---
 
+## Run Lifecycle
+
+For a detailed walkthrough of what happens in a scheduled run (logging, reports, provider selection, etc.), see:
+
+- `docs/guides/run-lifecycle.md`
+
+---
+
 ## Configuration
 
 ### Config File Locations
@@ -197,6 +205,9 @@ budget:
 
 ```yaml
 providers:
+  preference:
+    - claude
+    - codex
   claude:
     enabled: true
     data_path: "~/.claude"     # Where Claude Code stores usage data
@@ -268,9 +279,17 @@ nightshift preview --long
 # Show budget and task-filter explanations
 nightshift preview --explain
 
+# Disable gum pager output
+nightshift preview --plain
+
+# Emit JSON (full prompts included)
+nightshift preview --json
+
 # Write prompts to files
 nightshift preview --write ./nightshift-prompts
 ```
+
+If `gum` is available, Nightshift pipes preview output through the gum pager (it will attempt a Homebrew install if missing). Use `--plain` to force direct output.
 
 ### Daemon Mode
 
