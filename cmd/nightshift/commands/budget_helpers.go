@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 func resolveProviderList(cfg *config.Config, filter string) ([]string, error) {

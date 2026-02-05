@@ -27,7 +27,7 @@ Nightshift is a Go CLI tool that runs AI-powered maintenance tasks on your codeb
 ### Build from Source
 
 ```bash
-git clone https://github.com/marcusvorwaller/nightshift.git
+git clone https://github.com/marcus/nightshift.git
 cd nightshift
 go build -o nightshift ./cmd/nightshift
 ```
@@ -504,14 +504,14 @@ Nightshift will:
 
 ### td Task Management
 
-Integrate with [td](https://github.com/anthropics/td) for task tracking:
+Integrate with [td](https://github.com/marcus/td) for task tracking:
 
 ```yaml
 integrations:
   task_sources:
     - td:
         enabled: true
-        teach_agent: true   # Include td usage in agent prompts
+        teach_agent: true   # Include `td usage --new-session` + core workflow in prompts
 ```
 
 ---
@@ -519,6 +519,9 @@ integrations:
 ## Troubleshooting
 
 ### Common Issues
+
+**"Something feels off"**
+- Run `nightshift doctor` to check config, schedule, and provider health
 
 **"No config file found"**
 ```bash
@@ -591,4 +594,4 @@ nightshift --help
 nightshift <command> --help
 ```
 
-Report issues: https://github.com/marcusvorwaller/nightshift/issues
+Report issues: https://github.com/marcus/nightshift/issues

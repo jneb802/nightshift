@@ -2,6 +2,8 @@
 
 > Wake up to a cleaner codebase
 
+![Nightshift logo](logo.png)
+
 A Go CLI that runs overnight to perform AI-powered maintenance tasks on your codebase, using your remaining daily token budget from Claude Code/Codex subscriptions.
 
 ## Features
@@ -14,7 +16,15 @@ A Go CLI that runs overnight to perform AI-powered maintenance tasks on your cod
 ## Installation
 
 ```bash
-go install github.com/marcusvorwaller/nightshift@latest
+brew install marcus/tap/nightshift
+```
+
+Binary downloads are available on the GitHub releases page.
+
+Manual install:
+
+```bash
+go install github.com/marcus/nightshift/cmd/nightshift@latest
 ```
 
 ## Quick Start
@@ -29,6 +39,23 @@ nightshift run
 # Check status of last run
 nightshift status
 ```
+
+## Authentication (Subscriptions)
+
+Nightshift relies on the local Claude Code and Codex CLIs. If you have subscriptions, you can sign in via the CLIs without API keys.
+
+```bash
+# Claude Code
+claude
+/login
+
+# Codex
+codex --login
+```
+
+Claude Code login supports Claude.ai subscriptions or Anthropic Console credentials. Codex CLI supports signing in with ChatGPT or an API key.
+
+If you prefer API-based usage, you can authenticate those CLIs with API keys instead.
 
 ## Configuration
 

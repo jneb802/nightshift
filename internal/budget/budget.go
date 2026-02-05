@@ -7,8 +7,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
-	"github.com/marcusvorwaller/nightshift/internal/providers"
+	"github.com/marcus/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/providers"
 )
 
 // UsageProvider is the interface for getting usage data from a provider.

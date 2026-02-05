@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/db"
 )
 
 func TestBuildProfileAverages(t *testing.T) {

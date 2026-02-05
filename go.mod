@@ -1,4 +1,4 @@
-module github.com/marcusvorwaller/nightshift
+module github.com/marcus/nightshift
 
 go 1.24.0
 

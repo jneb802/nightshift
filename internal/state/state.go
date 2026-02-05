@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/db"
 )
 
 // State manages persistent nightshift state.

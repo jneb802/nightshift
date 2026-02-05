@@ -136,10 +136,10 @@ integrations:
   claude_md: true              # Read claude.md for project context
   agents_md: true              # Read agents.md for agent behavior hints
   task_sources:
-    - td:                      # td task management (https://github.com/anthropics/td)
+    - td:                      # td task management (https://github.com/marcus/td)
         enabled: true
         teach_agent: true      # Include brief td usage in agent prompts
-        # Agent learns: td list, td start, td log, td complete
+        # Agent learns: td usage --new-session, td start, td log, td handoff, td review
         # AGENTS.md should already have td instructions, but this ensures it
     - github_issues            # GitHub issues with "nightshift" label
     - file: TODO.md            # Custom file

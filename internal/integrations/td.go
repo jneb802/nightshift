@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 // TDReader integrates with the td task management CLI.

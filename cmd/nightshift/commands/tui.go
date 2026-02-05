@@ -3,7 +3,7 @@ package commands
 import (
 	"fmt"
 
-	"github.com/marcusvorwaller/nightshift/internal/ui"
+	"github.com/marcus/nightshift/internal/ui"
 	"github.com/spf13/cobra"
 )
 

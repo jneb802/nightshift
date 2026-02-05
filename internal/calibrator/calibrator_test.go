@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
-	"github.com/marcusvorwaller/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/db"
 )
 
 func TestCalibrateAPIMode(t *testing.T) {

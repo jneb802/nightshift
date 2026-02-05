@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/budget"
-	"github.com/marcusvorwaller/nightshift/internal/config"
-	"github.com/marcusvorwaller/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/budget"
+	"github.com/marcus/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/db"
 )
 
 // CalibrationResult represents the inferred budget and confidence.

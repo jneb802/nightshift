@@ -4,8 +4,8 @@ package tasks
 import (
 	"sort"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
-	"github.com/marcusvorwaller/nightshift/internal/state"
+	"github.com/marcus/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/state"
 )
 
 // Selector handles task selection based on priority scoring.

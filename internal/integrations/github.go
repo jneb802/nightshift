@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 // GitHubReader integrates with GitHub issues via gh CLI.

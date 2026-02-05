@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 	"github.com/robfig/cron/v3"
 )
 

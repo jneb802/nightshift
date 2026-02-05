@@ -3,7 +3,7 @@ package integrations
 import (
 	"testing"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 func TestTDReader_Name(t *testing.T) {

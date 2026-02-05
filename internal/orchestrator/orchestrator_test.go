@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/agents"
-	"github.com/marcusvorwaller/nightshift/internal/tasks"
+	"github.com/marcus/nightshift/internal/agents"
+	"github.com/marcus/nightshift/internal/tasks"
 )
 
 // mockAgent implements agents.Agent for testing.

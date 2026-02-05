@@ -5,7 +5,7 @@ package integrations
 import (
 	"context"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 // Reader loads context and tasks from an integration source.

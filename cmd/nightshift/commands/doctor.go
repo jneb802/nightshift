@@ -12,15 +12,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marcusvorwaller/nightshift/internal/budget"
-	"github.com/marcusvorwaller/nightshift/internal/calibrator"
-	"github.com/marcusvorwaller/nightshift/internal/config"
-	"github.com/marcusvorwaller/nightshift/internal/db"
-	"github.com/marcusvorwaller/nightshift/internal/providers"
-	"github.com/marcusvorwaller/nightshift/internal/scheduler"
-	"github.com/marcusvorwaller/nightshift/internal/snapshots"
-	"github.com/marcusvorwaller/nightshift/internal/state"
-	"github.com/marcusvorwaller/nightshift/internal/trends"
+	"github.com/marcus/nightshift/internal/budget"
+	"github.com/marcus/nightshift/internal/calibrator"
+	"github.com/marcus/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/providers"
+	"github.com/marcus/nightshift/internal/scheduler"
+	"github.com/marcus/nightshift/internal/snapshots"
+	"github.com/marcus/nightshift/internal/state"
+	"github.com/marcus/nightshift/internal/trends"
 )
 
 type checkStatus string

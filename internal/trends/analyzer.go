@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/db"
 )
 
 const (

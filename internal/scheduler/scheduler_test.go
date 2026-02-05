@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 func TestParseTimeOfDay(t *testing.T) {

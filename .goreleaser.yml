@@ -1,0 +1,46 @@
+version: 2
+
+builds:
+  - main: ./cmd/nightshift
+    binary: nightshift
+    ldflags:
+      - -s -w -X github.com/marcus/nightshift/cmd/nightshift/commands.Version={{ .Version }}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: nightshift
+    homepage: https://github.com/marcus/nightshift
+    description: Nightshift runs AI maintenance tasks overnight
+    directory: Casks
+    repository:
+      owner: marcus
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"

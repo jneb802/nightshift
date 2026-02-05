@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/agents"
-	"github.com/marcusvorwaller/nightshift/internal/budget"
-	"github.com/marcusvorwaller/nightshift/internal/logging"
-	"github.com/marcusvorwaller/nightshift/internal/tasks"
+	"github.com/marcus/nightshift/internal/agents"
+	"github.com/marcus/nightshift/internal/budget"
+	"github.com/marcus/nightshift/internal/logging"
+	"github.com/marcus/nightshift/internal/tasks"
 )
 
 // Constants for orchestration.

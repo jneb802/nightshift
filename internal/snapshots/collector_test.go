@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcusvorwaller/nightshift/internal/db"
-	"github.com/marcusvorwaller/nightshift/internal/tmux"
+	"github.com/marcus/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/tmux"
 )
 
 type fakeClaude struct {

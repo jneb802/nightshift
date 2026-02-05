@@ -4,9 +4,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
-	"github.com/marcusvorwaller/nightshift/internal/db"
-	"github.com/marcusvorwaller/nightshift/internal/state"
+	"github.com/marcus/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/db"
+	"github.com/marcus/nightshift/internal/state"
 )
 
 func setupTestSelector(t *testing.T) (*Selector, *state.State) {

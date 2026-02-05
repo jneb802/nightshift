@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/marcusvorwaller/nightshift/internal/config"
+	"github.com/marcus/nightshift/internal/config"
 )
 
 // ClaudeMDReader reads claude.md files for project context.
