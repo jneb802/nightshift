@@ -462,10 +462,12 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 
 type tmuxScraper struct{}
 
+// ScrapeClaudeUsage delegates to tmux.ScrapeClaudeUsage.
 func (tmuxScraper) ScrapeClaudeUsage(ctx context.Context) (tmux.UsageResult, error) {
 	return tmux.ScrapeClaudeUsage(ctx)
 }
 
+// ScrapeCodexUsage delegates to tmux.ScrapeCodexUsage.
 func (tmuxScraper) ScrapeCodexUsage(ctx context.Context) (tmux.UsageResult, error) {
 	return tmux.ScrapeCodexUsage(ctx)
 }

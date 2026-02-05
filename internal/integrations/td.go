@@ -32,10 +32,12 @@ func NewTDReader(cfg *config.Config) *TDReader {
 	return r
 }
 
+// Name returns the integration identifier.
 func (r *TDReader) Name() string {
 	return "td"
 }
 
+// Enabled reports whether td integration is configured.
 func (r *TDReader) Enabled() bool {
 	return r.enabled
 }

@@ -236,10 +236,12 @@ func newSetupModel() (*setupModel, error) {
 	return model, nil
 }
 
+// Init implements tea.Model.
 func (m *setupModel) Init() tea.Cmd {
 	return m.spinner.Tick
 }
 
+// Update implements tea.Model.
 func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.spinner, cmd = m.spinner.Update(msg)
@@ -305,6 +307,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// View implements tea.Model.
 func (m *setupModel) View() string {
 	var b strings.Builder
 	b.WriteString(styleHeader.Render("Nightshift Setup"))

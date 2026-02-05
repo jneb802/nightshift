@@ -29,6 +29,7 @@ const (
 	StatusIdle
 )
 
+// String returns a human-readable label for the daemon status.
 func (s DaemonStatus) String() string {
 	switch s {
 	case StatusStopped:
@@ -52,6 +53,7 @@ const (
 	TaskFailed
 )
 
+// String returns a human-readable label for the task status.
 func (s TaskStatus) String() string {
 	switch s {
 	case TaskPending:

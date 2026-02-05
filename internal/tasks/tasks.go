@@ -19,6 +19,7 @@ const (
 	CostVeryHigh                 // 500k+ tokens
 )
 
+// String returns a human-readable label for the cost tier.
 func (c CostTier) String() string {
 	switch c {
 	case CostLow:
@@ -59,6 +60,7 @@ const (
 	RiskHigh
 )
 
+// String returns a human-readable label for the risk level.
 func (r RiskLevel) String() string {
 	switch r {
 	case RiskLow:
@@ -101,6 +103,7 @@ const (
 	CategoryEmergency
 )
 
+// String returns a human-readable description of the task category.
 func (c TaskCategory) String() string {
 	switch c {
 	case CategoryPR:

@@ -1,3 +1,4 @@
+// Package setup provides interactive configuration and task preset selection for new projects.
 package setup
 
 import (
@@ -8,6 +9,7 @@ import (
 	"github.com/marcus/nightshift/internal/tasks"
 )
 
+// Preset identifies a task selection profile (safe, balanced, aggressive).
 type Preset string
 
 const (
@@ -16,6 +18,7 @@ const (
 	PresetAggressive Preset = "aggressive"
 )
 
+// RepoSignals holds detected project characteristics that influence task selection.
 type RepoSignals struct {
 	HasRelease bool
 	HasADR     bool
@@ -47,6 +50,7 @@ func DetectRepoSignals(projects []string) RepoSignals {
 	return signals
 }
 
+// PresetTasks returns the set of enabled task types for the given preset and repo signals.
 func PresetTasks(preset Preset, defs []tasks.TaskDefinition, signals RepoSignals) map[tasks.TaskType]bool {
 	selected := make(map[tasks.TaskType]bool)
 	for _, def := range defs {

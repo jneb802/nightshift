@@ -1,3 +1,4 @@
+// Package trends analyzes historical snapshot data to surface usage patterns and anomalies.
 package trends
 
 import (

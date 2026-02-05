@@ -64,6 +64,7 @@ const (
 	HintContext                        // Background context
 )
 
+// String returns the machine-readable name of the hint type.
 func (h HintType) String() string {
 	switch h {
 	case HintTaskSuggestion:
@@ -156,6 +157,7 @@ type ReaderError struct {
 	Err    error
 }
 
+// Error returns a formatted error string identifying the failed reader.
 func (e ReaderError) Error() string {
 	return e.Reader + ": " + e.Err.Error()
 }

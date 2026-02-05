@@ -1,3 +1,4 @@
+// Package snapshots collects and stores periodic usage data from AI providers.
 package snapshots
 
 import (

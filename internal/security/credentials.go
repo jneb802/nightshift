@@ -187,6 +187,7 @@ type CredentialError struct {
 	Message    string
 }
 
+// Error returns a formatted credential error message.
 func (e *CredentialError) Error() string {
 	return fmt.Sprintf("credential error (%s): %s", e.Credential, e.Message)
 }

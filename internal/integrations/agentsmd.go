@@ -23,10 +23,12 @@ func NewAgentsMDReader(cfg *config.Config) *AgentsMDReader {
 	}
 }
 
+// Name returns the integration identifier.
 func (r *AgentsMDReader) Name() string {
 	return "agents.md"
 }
 
+// Enabled reports whether agents.md integration is configured.
 func (r *AgentsMDReader) Enabled() bool {
 	return r.enabled
 }
