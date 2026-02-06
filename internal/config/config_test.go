@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,6 +207,27 @@ func TestIsTaskEnabled_EmptyEnabled(t *testing.T) {
 	}
 	if cfg.IsTaskEnabled("idea-generator") {
 		t.Error("expected idea-generator to be disabled")
+	}
+}
+
+func TestIsTaskExplicitlyEnabled(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Enabled: []string{"lint", "docs"},
+		},
+	}
+
+	if !cfg.IsTaskExplicitlyEnabled("lint") {
+		t.Error("expected lint to be explicitly enabled")
+	}
+	if cfg.IsTaskExplicitlyEnabled("security") {
+		t.Error("expected security to not be explicitly enabled")
+	}
+
+	// Empty list
+	cfgEmpty := &Config{}
+	if cfgEmpty.IsTaskExplicitlyEnabled("lint") {
+		t.Error("expected lint to not be explicitly enabled with empty list")
 	}
 }
 
@@ -418,5 +440,165 @@ func TestLoadFromPaths_Defaults(t *testing.T) {
 	}
 	if cfg.Providers.Claude.DataPath != DefaultClaudeDataPath {
 		t.Errorf("Providers.Claude.DataPath = %q, want %q", cfg.Providers.Claude.DataPath, DefaultClaudeDataPath)
+	}
+}
+
+func TestValidate_CustomTaskValid(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{
+					Type:        "my-review",
+					Name:        "My Review",
+					Description: "Review all the things",
+					Category:    "pr",
+					CostTier:    "medium",
+					RiskLevel:   "low",
+					Interval:    "48h",
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskMinimal(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{
+					Type:        "simple-task",
+					Name:        "Simple",
+					Description: "A simple task",
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskMissingType(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Name: "No Type", Description: "desc"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskMissingType) {
+		t.Errorf("expected ErrCustomTaskMissingType, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskInvalidType(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "My Task!", Name: "Bad Type", Description: "desc"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskInvalidType) {
+		t.Errorf("expected ErrCustomTaskInvalidType, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskMissingName(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "good-type", Description: "desc"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskMissingName) {
+		t.Errorf("expected ErrCustomTaskMissingName, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskMissingDescription(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "good-type", Name: "Good Name"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskMissingDescription) {
+		t.Errorf("expected ErrCustomTaskMissingDescription, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskInvalidCategory(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "t", Name: "n", Description: "d", Category: "invalid"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskInvalidCategory) {
+		t.Errorf("expected ErrCustomTaskInvalidCategory, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskInvalidCostTier(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "t", Name: "n", Description: "d", CostTier: "extreme"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskInvalidCostTier) {
+		t.Errorf("expected ErrCustomTaskInvalidCostTier, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskInvalidRiskLevel(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "t", Name: "n", Description: "d", RiskLevel: "extreme"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskInvalidRiskLevel) {
+		t.Errorf("expected ErrCustomTaskInvalidRiskLevel, got %v", err)
+	}
+}
+
+func TestValidate_CustomTaskInvalidInterval(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "my-task", Name: "n", Description: "d", Interval: "not-a-duration"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid interval, got nil")
+	}
+	if !strings.Contains(err.Error(), "my-task") {
+		t.Errorf("error should contain task type, got: %v", err)
+	}
+}
+
+func TestValidate_CustomTaskDuplicateType(t *testing.T) {
+	cfg := &Config{
+		Tasks: TasksConfig{
+			Custom: []CustomTaskConfig{
+				{Type: "dup-task", Name: "First", Description: "d1"},
+				{Type: "dup-task", Name: "Second", Description: "d2"},
+			},
+		},
+	}
+	if err := Validate(cfg); !errors.Is(err, ErrCustomTaskDuplicateType) {
+		t.Errorf("expected ErrCustomTaskDuplicateType, got %v", err)
 	}
 }

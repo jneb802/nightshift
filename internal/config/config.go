@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -315,7 +316,18 @@ var (
 	ErrInvalidLogLevel          = errors.New("log level must be debug, info, warn, or error")
 	ErrInvalidLogFormat         = errors.New("log format must be json or text")
 	ErrNoSchedule               = errors.New("either cron or interval must be specified")
+
+	ErrCustomTaskMissingType        = errors.New("custom task: type is required")
+	ErrCustomTaskMissingName        = errors.New("custom task: name is required")
+	ErrCustomTaskMissingDescription = errors.New("custom task: description is required")
+	ErrCustomTaskInvalidType        = errors.New("custom task: type must match [a-z0-9-]+")
+	ErrCustomTaskInvalidCategory    = errors.New("custom task: invalid category")
+	ErrCustomTaskInvalidCostTier    = errors.New("custom task: invalid cost_tier")
+	ErrCustomTaskInvalidRiskLevel   = errors.New("custom task: invalid risk_level")
+	ErrCustomTaskDuplicateType      = errors.New("custom task: duplicate type")
 )
+
+var customTaskTypeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // Validate checks configuration for errors.
 func Validate(cfg *Config) error {
@@ -399,6 +411,59 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// Custom task validation
+	if err := validateCustomTasks(cfg.Tasks.Custom); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateCustomTasks(tasks []CustomTaskConfig) error {
+	validCategories := map[string]bool{
+		"pr": true, "analysis": true, "options": true,
+		"safe": true, "map": true, "emergency": true,
+	}
+	validCostTiers := map[string]bool{
+		"low": true, "medium": true, "high": true, "very-high": true,
+	}
+	validRiskLevels := map[string]bool{
+		"low": true, "medium": true, "high": true,
+	}
+
+	seenTypes := map[string]bool{}
+	for _, task := range tasks {
+		if task.Type == "" {
+			return ErrCustomTaskMissingType
+		}
+		if !customTaskTypeRe.MatchString(task.Type) {
+			return ErrCustomTaskInvalidType
+		}
+		if task.Name == "" {
+			return ErrCustomTaskMissingName
+		}
+		if task.Description == "" {
+			return ErrCustomTaskMissingDescription
+		}
+		if task.Category != "" && !validCategories[strings.ToLower(task.Category)] {
+			return ErrCustomTaskInvalidCategory
+		}
+		if task.CostTier != "" && !validCostTiers[strings.ToLower(task.CostTier)] {
+			return ErrCustomTaskInvalidCostTier
+		}
+		if task.RiskLevel != "" && !validRiskLevels[strings.ToLower(task.RiskLevel)] {
+			return ErrCustomTaskInvalidRiskLevel
+		}
+		if task.Interval != "" {
+			if _, err := time.ParseDuration(task.Interval); err != nil {
+				return fmt.Errorf("custom task %q: invalid interval %q: %w", task.Type, task.Interval, err)
+			}
+		}
+		if seenTypes[task.Type] {
+			return ErrCustomTaskDuplicateType
+		}
+		seenTypes[task.Type] = true
+	}
 	return nil
 }
 
