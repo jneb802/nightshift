@@ -20,10 +20,10 @@ func (f fakeClaude) GetWeeklyUsage() (int64, error) { return f.weekly, f.err }
 func (f fakeClaude) GetTodayUsage() (int64, error)  { return f.daily, f.err }
 
 type fakeScraper struct {
-	claudePct          float64
-	codexPct           float64
-	sessionResetTime   string
-	weeklyResetTime    string
+	claudePct        float64
+	codexPct         float64
+	sessionResetTime string
+	weeklyResetTime  string
 }
 
 func (f fakeScraper) ScrapeClaudeUsage(ctx context.Context) (tmux.UsageResult, error) {
@@ -53,9 +53,9 @@ type fakeCodex struct {
 	err          error
 }
 
-func (f fakeCodex) ListSessionFiles() ([]string, error)  { return f.files, f.err }
-func (f fakeCodex) GetTodayTokens() (int64, error)       { return f.dailyTokens, f.err }
-func (f fakeCodex) GetWeeklyTokens() (int64, error)      { return f.weeklyTokens, f.err }
+func (f fakeCodex) ListSessionFiles() ([]string, error) { return f.files, f.err }
+func (f fakeCodex) GetTodayTokens() (int64, error)      { return f.dailyTokens, f.err }
+func (f fakeCodex) GetWeeklyTokens() (int64, error)     { return f.weeklyTokens, f.err }
 
 func TestTakeSnapshotInsertsClaude(t *testing.T) {
 	home := t.TempDir()
@@ -197,6 +197,13 @@ func TestCodexTokenTotalsNoData(t *testing.T) {
 	}
 	if daily != 0 {
 		t.Fatalf("daily tokens = %d, want 0", daily)
+	}
+}
+
+func TestCodexTokenTotalsPropagatesErrors(t *testing.T) {
+	_, _, err := codexTokenTotals(fakeCodex{err: context.DeadlineExceeded})
+	if err == nil {
+		t.Fatal("expected error from codexTokenTotals")
 	}
 }
 

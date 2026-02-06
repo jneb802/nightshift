@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -74,8 +75,10 @@ func (u *TokenUsage) TotalTokens() int64 {
 
 // Claude wraps the Claude Code CLI as a provider.
 type Claude struct {
-	dataPath   string      // Path to ~/.claude
-	statsCache *StatsCache // Cached stats data
+	dataPath              string      // Path to ~/.claude
+	statsCache            *StatsCache // Cached stats data
+	mu                    sync.RWMutex
+	lastUsedPercentSource string
 }
 
 // NewClaude creates a Claude Code provider.
@@ -215,27 +218,40 @@ func ParseSessionJSONL(path string) (*TokenUsage, error) {
 // Note: JSONL input_tokens+output_tokens ≠ dailyModelTokens (Claude Code uses its
 // own aggregation), so JSONL fallback is approximate.
 func (c *Claude) GetTodayUsage() (int64, error) {
+	usage, _, err := c.getTodayUsageWithSource()
+	return usage, err
+}
+
+func (c *Claude) getTodayUsageWithSource() (int64, string, error) {
 	stats, err := c.ParseStatsCache()
 	if err == nil {
 		c.statsCache = stats
 		today := time.Now().Format("2006-01-02")
 		byDate := stats.TokensByDate()
 		if t, ok := byDate[today]; ok && t > 0 {
-			return t, nil
+			return t, "stats-cache", nil
 		}
 	}
 
 	// Fallback: scan JSONL directly (approximate — different metric)
 	tokens, scanErr := c.ScanTodayTokens()
 	if scanErr == nil && tokens > 0 {
-		return tokens, nil
+		return tokens, "jsonl-fallback", nil
 	}
-	return 0, err
+	if err != nil {
+		return 0, "", err
+	}
+	return 0, "stats-cache", nil
 }
 
 // GetWeeklyUsage returns the last 7 days total token usage.
 // Primary: stats-cache.json. Fallback: direct JSONL scanning.
 func (c *Claude) GetWeeklyUsage() (int64, error) {
+	usage, _, err := c.getWeeklyUsageWithSource()
+	return usage, err
+}
+
+func (c *Claude) getWeeklyUsageWithSource() (int64, string, error) {
 	stats, err := c.ParseStatsCache()
 	if err == nil {
 		c.statsCache = stats
@@ -247,16 +263,19 @@ func (c *Claude) GetWeeklyUsage() (int64, error) {
 			total += byDate[date]
 		}
 		if total > 0 {
-			return total, nil
+			return total, "stats-cache", nil
 		}
 	}
 
 	// Fallback: scan JSONL directly (approximate)
 	tokens, scanErr := c.ScanWeeklyTokens()
 	if scanErr == nil && tokens > 0 {
-		return tokens, nil
+		return tokens, "jsonl-fallback", nil
 	}
-	return 0, err
+	if err != nil {
+		return 0, "", err
+	}
+	return 0, "stats-cache", nil
 }
 
 // GetUsedPercent calculates the used percentage based on mode and budget.
@@ -264,15 +283,18 @@ func (c *Claude) GetWeeklyUsage() (int64, error) {
 // weeklyBudget: total weekly token budget
 func (c *Claude) GetUsedPercent(mode string, weeklyBudget int64) (float64, error) {
 	if weeklyBudget <= 0 {
+		c.setLastUsedPercentSource("")
 		return 0, fmt.Errorf("invalid weekly budget: %d", weeklyBudget)
 	}
 
 	switch mode {
 	case "daily":
-		usage, err := c.GetTodayUsage()
+		usage, source, err := c.getTodayUsageWithSource()
 		if err != nil {
+			c.setLastUsedPercentSource("")
 			return 0, err
 		}
+		c.setLastUsedPercentSource(source)
 		dailyBudget := weeklyBudget / 7
 		if dailyBudget <= 0 {
 			return 0, nil
@@ -280,15 +302,31 @@ func (c *Claude) GetUsedPercent(mode string, weeklyBudget int64) (float64, error
 		return float64(usage) / float64(dailyBudget) * 100, nil
 
 	case "weekly":
-		usage, err := c.GetWeeklyUsage()
+		usage, source, err := c.getWeeklyUsageWithSource()
 		if err != nil {
+			c.setLastUsedPercentSource("")
 			return 0, err
 		}
+		c.setLastUsedPercentSource(source)
 		return float64(usage) / float64(weeklyBudget) * 100, nil
 
 	default:
+		c.setLastUsedPercentSource("")
 		return 0, fmt.Errorf("invalid mode: %s (must be 'daily' or 'weekly')", mode)
 	}
+}
+
+// LastUsedPercentSource reports where the last GetUsedPercent call sourced data.
+func (c *Claude) LastUsedPercentSource() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastUsedPercentSource
+}
+
+func (c *Claude) setLastUsedPercentSource(source string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastUsedPercentSource = source
 }
 
 // GetDailyStats returns usage stats for a specific date.

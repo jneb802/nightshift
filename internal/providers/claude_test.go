@@ -390,6 +390,51 @@ func TestClaudeProvider_GetUsedPercent_Weekly(t *testing.T) {
 	}
 }
 
+func TestClaudeProvider_GetUsedPercent_SourceStatsCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsPath := filepath.Join(tmpDir, "stats-cache.json")
+	today := time.Now().Format("2006-01-02")
+	content := `{
+		"version": 1,
+		"dailyModelTokens": [
+			{"date": "` + today + `", "tokensByModel": {"model": 50000}}
+		]
+	}`
+	if err := os.WriteFile(statsPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewClaudeWithPath(tmpDir)
+	if _, err := provider.GetUsedPercent("daily", 700000); err != nil {
+		t.Fatalf("GetUsedPercent error: %v", err)
+	}
+	if got := provider.LastUsedPercentSource(); got != "stats-cache" {
+		t.Fatalf("LastUsedPercentSource = %q, want %q", got, "stats-cache")
+	}
+}
+
+func TestClaudeProvider_GetUsedPercent_SourceJSONLFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "projects", "myproj")
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().Local()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, now.Location())
+	writeJSONLFile(t, filepath.Join(projDir, "session.jsonl"), []string{
+		makeAssistantLine(today, 100, 50),
+	})
+
+	provider := NewClaudeWithPath(tmpDir)
+	if _, err := provider.GetUsedPercent("daily", 700000); err != nil {
+		t.Fatalf("GetUsedPercent error: %v", err)
+	}
+	if got := provider.LastUsedPercentSource(); got != "jsonl-fallback" {
+		t.Fatalf("LastUsedPercentSource = %q, want %q", got, "jsonl-fallback")
+	}
+}
+
 func TestClaudeProvider_GetUsedPercent_InvalidMode(t *testing.T) {
 	provider := NewClaudeWithPath(t.TempDir())
 	_, err := provider.GetUsedPercent("monthly", 700000)

@@ -278,6 +278,62 @@ func TestCodexGetRateLimits_NoSessions(t *testing.T) {
 	}
 }
 
+func TestCodexGetRateLimits_SkipsNewestStubSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	yesterday := now.AddDate(0, 0, -1)
+	yesterdayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", yesterday.Year()),
+		fmt.Sprintf("%02d", int(yesterday.Month())),
+		fmt.Sprintf("%02d", yesterday.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(yesterdayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Older session with real rate limits.
+	withLimits := filepath.Join(yesterdayDir, "with-limits.jsonl")
+	if err := os.WriteFile(withLimits, []byte(codexRateLimitsJSON(
+		`{"used_percent":34.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(withLimits, oldTime, oldTime)
+
+	// Newest session is a stub with no rate limit data.
+	stub := filepath.Join(todayDir, "stub.jsonl")
+	if err := os.WriteFile(stub, []byte(`{"type":"session_meta","payload":{"id":"stub"}}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	limits, err := provider.GetRateLimits()
+	if err != nil {
+		t.Fatalf("GetRateLimits error: %v", err)
+	}
+	if limits == nil || limits.Primary == nil || limits.Secondary == nil {
+		t.Fatal("expected non-nil rate limits from older session")
+	}
+	if limits.Primary.UsedPercent != 34.0 {
+		t.Fatalf("Primary.UsedPercent = %.1f, want 34.0", limits.Primary.UsedPercent)
+	}
+	if limits.Secondary.UsedPercent != 10.0 {
+		t.Fatalf("Secondary.UsedPercent = %.1f, want 10.0", limits.Secondary.UsedPercent)
+	}
+}
+
 func TestCodexGetUsedPercent_Daily_RateLimitFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionsDir := filepath.Join(tmpDir, "sessions", "2026", "02", "03")
@@ -380,6 +436,40 @@ func TestCodexGetUsedPercent_Daily_TokenFallback(t *testing.T) {
 	}
 }
 
+func TestCodexGetUsedPercent_Daily_ZeroRateLimitDoesNotFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionPath := filepath.Join(todayDir, "session.jsonl")
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexRateLimitsJSON(
+		`{"used_percent":0.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":10.0,"window_minutes":10080,"resets_at":1770483159}`,
+	) + "\n" + `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"cached_input_tokens":4000,"output_tokens":1000,"reasoning_output_tokens":200,"total_tokens":6200}}}}
+`
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	pct, err := provider.GetUsedPercent("daily", 700000)
+	if err != nil {
+		t.Fatalf("GetUsedPercent error: %v", err)
+	}
+	if pct != 0 {
+		t.Fatalf("GetUsedPercent(daily) = %.2f, want 0.0", pct)
+	}
+}
+
 func TestCodexGetUsedPercent_Weekly(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionsDir := filepath.Join(tmpDir, "sessions", "2026", "02", "03")
@@ -406,6 +496,40 @@ func TestCodexGetUsedPercent_Weekly(t *testing.T) {
 
 	if pct != 10.0 {
 		t.Errorf("GetUsedPercent(weekly) = %.1f, want 10.0", pct)
+	}
+}
+
+func TestCodexGetUsedPercent_Weekly_ZeroRateLimitDoesNotFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+	todayDir := filepath.Join(
+		tmpDir, "sessions",
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%02d", now.Day()),
+	)
+	if err := os.MkdirAll(todayDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionPath := filepath.Join(todayDir, "session.jsonl")
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexRateLimitsJSON(
+		`{"used_percent":5.0,"window_minutes":300,"resets_at":1769896359}`,
+		`{"used_percent":0.0,"window_minutes":10080,"resets_at":1770483159}`,
+	) + "\n" + `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"cached_input_tokens":4000,"output_tokens":1000,"reasoning_output_tokens":200,"total_tokens":6200}}}}
+`
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	pct, err := provider.GetUsedPercent("weekly", 700000)
+	if err != nil {
+		t.Fatalf("GetUsedPercent error: %v", err)
+	}
+	if pct != 0 {
+		t.Fatalf("GetUsedPercent(weekly) = %.2f, want 0.0", pct)
 	}
 }
 
@@ -820,6 +944,61 @@ func TestCodexParseSessionTokenUsage_NoData(t *testing.T) {
 	}
 	if usage != nil {
 		t.Error("expected nil token usage for stub session")
+	}
+}
+
+func TestCodexParseSessionTokenUsage_NegativeDeltaFallsBackToLatest(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	// Second event has lower totals (counter reset) so delta is negative.
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexTokenCountJSON(5000, 4500, 400, 100, 5500) + "\n" +
+		codexTokenCountJSON(1000, 800, 200, 50, 1250) + "\n"
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.ParseSessionTokenUsage(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionTokenUsage error: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("expected non-nil token usage")
+	}
+
+	// Falls back to latest event totals: (1000-800) + 200 + 50 = 450
+	if usage.TotalTokens != 450 {
+		t.Fatalf("TotalTokens = %d, want 450", usage.TotalTokens)
+	}
+}
+
+func TestCodexParseSessionTokenUsage_ClampsNegativeNonCachedInput(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "session.jsonl")
+
+	// cached_input_tokens > input_tokens should not produce negative billable totals.
+	content := `{"type":"session_meta","payload":{"id":"test"}}
+` + codexTokenCountJSON(100, 200, 50, 0, 150) + "\n"
+
+	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewCodexWithPath(tmpDir)
+	usage, err := provider.ParseSessionTokenUsage(sessionPath)
+	if err != nil {
+		t.Fatalf("ParseSessionTokenUsage error: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("expected non-nil token usage")
+	}
+
+	// non-cached input is clamped to 0, so total is output + reasoning.
+	if usage.TotalTokens != 50 {
+		t.Fatalf("TotalTokens = %d, want 50", usage.TotalTokens)
 	}
 }
 

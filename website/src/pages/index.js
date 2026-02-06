@@ -98,6 +98,7 @@ function HeroSection() {
             <i className="icon-github" /> GitHub
           </a>
         </div>
+        <p className="ns-openSource">Open source · MIT License</p>
       </div>
     </section>
   );
@@ -187,21 +188,24 @@ function FeatureCards() {
 }
 
 const WORKFLOW_STEPS = [
-  { icon: 'icon-settings', label: 'Configure', desc: 'Set budget, repos, and schedule', color: 'ns-stepAmber' },
-  { icon: 'icon-moon', label: 'Sleep', desc: 'Nightshift runs at 2am with your remaining tokens', color: 'ns-stepPurple' },
-  { icon: 'icon-sun', label: 'Wake up', desc: 'Morning summary of branches and PRs', color: 'ns-stepOrange' },
-  { icon: 'icon-git-pull-request', label: 'Review', desc: 'Merge what surprised you, close the rest', color: 'ns-stepRose' },
+  { icon: 'icon-settings', label: 'Configure', desc: 'Point it at your repos. Set a budget cap and schedule.', detail: 'nightshift.yml', color: 'ns-stepAmber' },
+  { icon: 'icon-moon', label: 'Sleep', desc: 'At 2 AM, nightshift picks up your remaining tokens and gets to work.', detail: '2:00 AM', color: 'ns-stepPurple' },
+  { icon: 'icon-sun', label: 'Wake up', desc: 'Morning summary waiting in your terminal — branches, PRs, and findings.', detail: '3 PRs ready', color: 'ns-stepOrange' },
+  { icon: 'icon-git-pull-request', label: 'Review', desc: 'Merge what surprised you. Close the rest. Nothing changes without you.', detail: 'git merge', color: 'ns-stepRose' },
 ];
 
 function WorkflowSection() {
   return (
     <section className="ns-workflow">
       <h2 className="ns-workflowTitle">How it works</h2>
-      <div className="ns-workflowGrid">
+      <div className="ns-workflowTimeline">
         {WORKFLOW_STEPS.map((step, i) => (
-          <div key={i} className="ns-workflowStep">
-            <div className={`ns-stepIcon ${step.color}`}>
-              <i className={step.icon} />
+          <div key={i} className={`ns-workflowStep ${i < WORKFLOW_STEPS.length - 1 ? 'ns-hasConnector' : ''}`}>
+            <div className="ns-stepHeader">
+              <div className={`ns-stepIcon ${step.color}`}>
+                <i className={step.icon} />
+              </div>
+              <span className="ns-stepDetail">{step.detail}</span>
             </div>
             <h3>{step.label}</h3>
             <p>{step.desc}</p>
@@ -219,11 +223,23 @@ function AgentsSection() {
       <p className="ns-agentsSubtitle">Uses the CLI tools you already have installed</p>
       <div className="ns-agentsGrid">
         <div className="ns-agentBadge">
-          <div className="ns-agentDot" style={{ background: 'rgba(232, 168, 73, 0.15)', color: 'var(--ns-amber)' }}>C</div>
+          <div className="ns-agentDot ns-agentClaude">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+              <path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2z" />
+              <path d="M17 13l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3z" opacity="0.6" />
+            </svg>
+          </div>
           <span>Claude Code</span>
         </div>
         <div className="ns-agentBadge">
-          <div className="ns-agentDot" style={{ background: 'rgba(0, 200, 150, 0.15)', color: '#7ec97e' }}>X</div>
+          <div className="ns-agentDot ns-agentCodex">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 3L20 7.5V16.5L12 21L4 16.5V7.5L12 3Z" />
+              <path d="M12 8V16" />
+              <path d="M8.5 10L15.5 14" />
+              <path d="M15.5 10L8.5 14" />
+            </svg>
+          </div>
           <span>Codex</span>
         </div>
       </div>

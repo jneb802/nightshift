@@ -198,12 +198,12 @@ func parseClaudeWeeklyPct(output string) (float64, error) {
 	output = StripANSI(output)
 	// Match "Current week" followed by a percentage, possibly on the next line.
 	// The (?s) flag makes . match newlines so the pattern crosses lines.
-	re := regexp.MustCompile(`(?is)current\s+week\s*\(all\s+models\).*?(\d{1,3})%`)
+	re := regexp.MustCompile(`(?is)current\s+week\s*\(all\s+models\).*?(\d{1,3}(?:\.\d+)?)%`)
 	if match := re.FindStringSubmatch(output); len(match) == 2 {
 		return parsePct(match[1])
 	}
 	// Fallback: any "Current week" header followed by a percentage
-	re2 := regexp.MustCompile(`(?is)current\s+week.*?(\d{1,3})%`)
+	re2 := regexp.MustCompile(`(?is)current\s+week.*?(\d{1,3}(?:\.\d+)?)%`)
 	if match := re2.FindStringSubmatch(output); len(match) == 2 {
 		return parsePct(match[1])
 	}
@@ -213,7 +213,7 @@ func parseClaudeWeeklyPct(output string) (float64, error) {
 func parseCodexWeeklyPct(output string) (float64, error) {
 	output = StripANSI(output)
 	// Codex /status shows "77% left" -- extract the number and qualifier.
-	re := regexp.MustCompile(`(?i)weekly\s+limit[^\n]*?(\d{1,3})%\s*(left|used)?`)
+	re := regexp.MustCompile(`(?i)weekly\s+limit[^\n]*?(\d{1,3}(?:\.\d+)?)%\s*(left|used)?`)
 	if match := re.FindStringSubmatch(output); len(match) >= 2 {
 		pct, err := parsePct(match[1])
 		if err != nil {
@@ -229,14 +229,14 @@ func parseCodexWeeklyPct(output string) (float64, error) {
 }
 
 func parsePct(value string) (float64, error) {
-	pct, err := strconv.Atoi(strings.TrimSpace(value))
+	pct, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil {
 		return 0, fmt.Errorf("parse percent: %w", err)
 	}
 	if pct < 0 || pct > 100 {
-		return 0, fmt.Errorf("percent out of range: %d", pct)
+		return 0, fmt.Errorf("percent out of range: %.2f", pct)
 	}
-	return float64(pct), nil
+	return pct, nil
 }
 
 func uniqueSessionName(provider string) string {

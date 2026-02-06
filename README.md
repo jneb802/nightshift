@@ -1,19 +1,18 @@
 # Nightshift
 
-> Wake up to a cleaner codebase
+> It finds what you forgot to look for.
 
 ![Nightshift logo](logo.png)
 
-A Go CLI that runs overnight to perform AI-powered maintenance tasks on your codebase, using your remaining daily token budget from Claude Code/Codex subscriptions.
+Your tokens get reset every week, you might as well use them. Nightshift runs overnight to find dead code, doc drift, test gaps, security issues, and 20+ other things silently accumulating while you ship features. Like a Roomba for your codebase — runs overnight, worst case you close the PR.
 
-Nightshift always works on a branch or PR. It never writes directly to your primary branch.
-While we take precautions, LLMs are still LLMs — review outputs before merging.
+Everything lands as a branch or PR. It never writes directly to your primary branch. Don't like something? Close it. That's the whole rollback plan.
 
 ## Features
 
 - **Budget-aware**: Uses remaining daily allotment, never exceeds configurable max (default 75%)
-- **Multi-project support**: Works across multiple repos
-- **Configurable tasks**: From auto-PRs to analysis reports
+- **Multi-project**: Point it at your repos, it already knows what to look for
+- **Zero risk**: Everything is a PR — merge what surprises you, close the rest
 - **Great DX**: Thoughtful CLI defaults with clear output and reports
 
 ## Installation

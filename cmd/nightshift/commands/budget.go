@@ -109,6 +109,7 @@ func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName strin
 	if err != nil {
 		return err
 	}
+	claudeApprox := provName == "claude" && result.UsedPercentSource == "jsonl-fallback"
 
 	estimate := budget.BudgetEstimate{
 		WeeklyTokens: int64(cfg.GetProviderBudget(provName)),
@@ -149,6 +150,9 @@ func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName strin
 
 		// Used today with low-data warning
 		usedLine := fmt.Sprintf("  Used today:   %s (%.1f%%)", formatTokens64(usedTokens), result.UsedPercent)
+		if claudeApprox {
+			usedLine += "  [approx: JSONL fallback]"
+		}
 		if result.UsedPercent == 0 && (estimate.Confidence == "low" || estimate.Confidence == "medium") {
 			usedLine += fmt.Sprintf("  [limited data — %d samples]", estimate.SampleCount)
 		}
@@ -201,6 +205,9 @@ func printProviderBudget(mgr *budget.Manager, cfg *config.Config, provName strin
 
 		// Used with low-data warning
 		usedLine := fmt.Sprintf("  Used:         %s (%.1f%%)", formatTokens64(usedTokens), result.UsedPercent)
+		if claudeApprox {
+			usedLine += "  [approx: JSONL fallback]"
+		}
 		if result.UsedPercent == 0 && (estimate.Confidence == "low" || estimate.Confidence == "medium") {
 			usedLine += fmt.Sprintf("  [limited data — %d samples]", estimate.SampleCount)
 		}

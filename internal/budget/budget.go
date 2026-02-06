@@ -43,6 +43,12 @@ type BudgetSource interface {
 	GetBudget(provider string) (BudgetEstimate, error)
 }
 
+// UsedPercentSourceProvider reports where the last used-percent value came from.
+// Implemented optionally by providers to improve CLI diagnostics.
+type UsedPercentSourceProvider interface {
+	LastUsedPercentSource() string
+}
+
 // TrendAnalyzer predicts near-term usage to protect daytime budget.
 type TrendAnalyzer interface {
 	PredictDaytimeUsage(provider string, now time.Time, weeklyBudget int64) (int64, error)
@@ -96,6 +102,7 @@ type AllowanceResult struct {
 	WeeklyBudget       int64   // Weekly token budget used for calculation
 	BudgetBase         int64   // Base budget (daily or remaining weekly)
 	UsedPercent        float64 // Current used percentage
+	UsedPercentSource  string  // Source of used percentage (e.g., stats-cache, jsonl-fallback)
 	ReserveAmount      int64   // Tokens reserved
 	PredictedUsage     int64   // Predicted remaining usage today
 	Mode               string  // "daily" or "weekly"
@@ -118,6 +125,7 @@ func (m *Manager) CalculateAllowance(provider string) (*AllowanceResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("getting used percent for %s: %w", provider, err)
 	}
+	usedPercentSource := m.usedPercentSource(provider)
 
 	mode := m.cfg.Budget.Mode
 	if mode == "" {
@@ -170,6 +178,7 @@ func (m *Manager) CalculateAllowance(provider string) (*AllowanceResult, error) 
 	result.BudgetConfidence = estimate.Confidence
 	result.BudgetSampleCount = estimate.SampleCount
 	result.WeeklyBudget = weeklyBudget
+	result.UsedPercentSource = usedPercentSource
 
 	return result, nil
 }
@@ -291,6 +300,20 @@ func (m *Manager) GetUsedPercent(provider string) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unknown provider: %s", provider)
 	}
+}
+
+func (m *Manager) usedPercentSource(provider string) string {
+	switch provider {
+	case "claude":
+		if reporter, ok := m.claude.(UsedPercentSourceProvider); ok {
+			return reporter.LastUsedPercentSource()
+		}
+	case "codex":
+		if reporter, ok := m.codex.(UsedPercentSourceProvider); ok {
+			return reporter.LastUsedPercentSource()
+		}
+	}
+	return ""
 }
 
 // DaysUntilWeeklyReset calculates days remaining until the weekly budget resets.

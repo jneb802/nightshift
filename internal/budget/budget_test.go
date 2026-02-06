@@ -11,11 +11,15 @@ import (
 type mockClaudeProvider struct {
 	usedPercent float64
 	err         error
+	source      string
 }
 
 func (m *mockClaudeProvider) Name() string { return "claude" }
 func (m *mockClaudeProvider) GetUsedPercent(mode string, weeklyBudget int64) (float64, error) {
 	return m.usedPercent, m.err
+}
+func (m *mockClaudeProvider) LastUsedPercentSource() string {
+	return m.source
 }
 
 // mockCodexProvider implements CodexUsageProvider for testing.
@@ -562,6 +566,28 @@ func TestSummary(t *testing.T) {
 	}
 	if !contains(summary, "25.0%") {
 		t.Error("summary should contain used percent")
+	}
+}
+
+func TestCalculateAllowance_UsedPercentSource(t *testing.T) {
+	cfg := &config.Config{
+		Budget: config.BudgetConfig{
+			Mode:           "daily",
+			WeeklyTokens:   700000,
+			MaxPercent:     10,
+			ReservePercent: 5,
+		},
+	}
+
+	claude := &mockClaudeProvider{usedPercent: 25, source: "jsonl-fallback"}
+	mgr := NewManager(cfg, claude, nil)
+
+	result, err := mgr.CalculateAllowance("claude")
+	if err != nil {
+		t.Fatalf("CalculateAllowance error: %v", err)
+	}
+	if result.UsedPercentSource != "jsonl-fallback" {
+		t.Fatalf("UsedPercentSource = %q, want %q", result.UsedPercentSource, "jsonl-fallback")
 	}
 }
 

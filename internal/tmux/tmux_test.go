@@ -99,9 +99,17 @@ Resets Feb 8 at 10:59am (America/Los_Angeles)
 			want: 59,
 		},
 		{
-			name: "multiline with ansi",
+			name:   "multiline with ansi",
 			output: "\x1b[1mCurrent week (all models)\x1b[0m\n\x1b[34m████\x1b[0m 72% used",
-			want:    72,
+			want:   72,
+		},
+		{
+			name: "decimal percent",
+			output: `
+Current week (all models)
+████ 72.5% used
+`,
+			want: 72.5,
 		},
 		{
 			name:    "no match",
@@ -222,10 +230,10 @@ func TestWaitForSubstantialContentTimeout(t *testing.T) {
 
 func TestParseClaudeResetTimes(t *testing.T) {
 	tests := []struct {
-		name           string
-		output         string
-		wantSession    string
-		wantWeekly     string
+		name        string
+		output      string
+		wantSession string
+		wantWeekly  string
 	}{
 		{
 			name: "real claude output",
@@ -371,6 +379,20 @@ Weekly limit: 23% used
 Weekly limit: 30%
 `,
 			want: 30,
+		},
+		{
+			name: "decimal left converts to used",
+			output: `
+Weekly limit: 77.5% left
+`,
+			want: 22.5,
+		},
+		{
+			name: "decimal used stays as used",
+			output: `
+Weekly limit: 23.5% used
+`,
+			want: 23.5,
 		},
 		{
 			name:    "no match",

@@ -199,7 +199,7 @@ html[data-theme='dark'] .footer {
   max-width: 380px;
   width: 90%;
   margin-bottom: 1.5rem;
-  filter: drop-shadow(0 0 30px rgba(232, 168, 73, 0.25));
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 24px rgba(232, 168, 73, 0.12));
   position: relative;
 }
 
@@ -314,6 +314,17 @@ html[data-theme='dark'] .footer {
     transform: translate(-50%, -50%) rotate(var(--sparkle-angle, 0deg)) translateY(calc(-1 * var(--sparkle-distance, 50px)));
     opacity: 0;
   }
+}
+
+/* ─── Open source line ─────────────────────────────────────────── */
+
+.ns-openSource {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  color: var(--ns-text-muted);
+  margin-top: 1.25rem;
+  margin-bottom: 0;
+  letter-spacing: 0.03em;
 }
 
 /* ─── CTA buttons ──────────────────────────────────────────────── */
@@ -495,15 +506,37 @@ html[data-theme='dark'] .footer {
   margin-bottom: 3rem;
 }
 
-.ns-workflowGrid {
+.ns-workflowTimeline {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  position: relative;
 }
 
 .ns-workflowStep {
   text-align: center;
-  padding: 1.5rem 1rem;
+  padding: 1.5rem 1.25rem;
+  position: relative;
+}
+
+.ns-hasConnector::after {
+  content: '';
+  position: absolute;
+  top: 38px;
+  right: -2px;
+  width: calc(100% - 56px - 2.5rem);
+  height: 1px;
+  background: linear-gradient(90deg, var(--ns-border-hover), var(--ns-border));
+  transform: translateX(50%);
+  z-index: 1;
+}
+
+.ns-stepHeader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
 }
 
 .ns-stepIcon {
@@ -513,13 +546,25 @@ html[data-theme='dark'] .footer {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto 1rem;
   font-size: 1.4rem;
   transition: transform 0.3s ease;
+  position: relative;
+  z-index: 2;
 }
 
 .ns-stepIcon:hover {
   transform: scale(1.08);
+}
+
+.ns-stepDetail {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.7rem;
+  color: var(--ns-text-muted);
+  background: var(--ns-bg-elevated);
+  border: 1px solid var(--ns-border);
+  padding: 0.15rem 0.6rem;
+  border-radius: 10px;
+  letter-spacing: 0.02em;
 }
 
 .ns-stepAmber  { background: rgba(232, 168, 73, 0.15); color: var(--ns-amber); border: 1px solid rgba(232, 168, 73, 0.2); }
@@ -540,6 +585,9 @@ html[data-theme='dark'] .footer {
   color: var(--ns-text-secondary);
   margin: 0;
   line-height: 1.5;
+  max-width: 200px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* ─── Bottom CTA ───────────────────────────────────────────────── */
@@ -755,14 +803,31 @@ html[data-theme='dark'] .footer {
 }
 
 .ns-agentDot {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 1.2rem;
   font-weight: 700;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.ns-agentClaude {
+  background: rgba(232, 168, 73, 0.15);
+  color: var(--ns-amber);
+  border: 1px solid rgba(232, 168, 73, 0.2);
+}
+
+.ns-agentCodex {
+  background: rgba(0, 200, 150, 0.15);
+  color: #7ec97e;
+  border: 1px solid rgba(0, 200, 150, 0.2);
+}
+
+.ns-agentBadge:hover .ns-agentDot {
+  transform: scale(1.08);
 }
 
 /* ─── Features pill grid ───────────────────────────────────────── */
@@ -805,13 +870,16 @@ html[data-theme='dark'] .footer {
   .ns-featureGrid {
     grid-template-columns: 1fr;
   }
-  .ns-workflowGrid {
+  .ns-workflowTimeline {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .ns-hasConnector::after {
+    display: none;
   }
 }
 
 @media (max-width: 480px) {
-  .ns-workflowGrid {
+  .ns-workflowTimeline {
     grid-template-columns: 1fr;
   }
 }

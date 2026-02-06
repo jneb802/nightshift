@@ -163,38 +163,14 @@ func (c *Codex) ListSessionFiles() ([]string, error) {
 
 // FindMostRecentSession finds the most recent session file by modification time.
 func (c *Codex) FindMostRecentSession() (string, error) {
-	sessions, err := c.ListSessionFiles()
+	sessions, err := c.sessionFilesByModTime()
 	if err != nil {
 		return "", err
 	}
 	if len(sessions) == 0 {
 		return "", nil
 	}
-
-	// Sort by modification time, most recent first
-	type fileInfo struct {
-		path    string
-		modTime time.Time
-	}
-	var files []fileInfo
-
-	for _, s := range sessions {
-		info, err := os.Stat(s)
-		if err != nil {
-			continue
-		}
-		files = append(files, fileInfo{path: s, modTime: info.ModTime()})
-	}
-
-	if len(files) == 0 {
-		return "", nil
-	}
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].modTime.After(files[j].modTime)
-	})
-
-	return files[0].path, nil
+	return sessions[0], nil
 }
 
 // GetRateLimits retrieves the latest rate limits from the most recent session.
@@ -203,21 +179,34 @@ func (c *Codex) GetRateLimits() (*CodexRateLimits, error) {
 		return c.rateLimits, nil
 	}
 
-	sessionPath, err := c.FindMostRecentSession()
+	sessions, err := c.sessionFilesByModTime()
 	if err != nil {
 		return nil, fmt.Errorf("finding session: %w", err)
 	}
-	if sessionPath == "" {
+	if len(sessions) == 0 {
 		return nil, nil // No sessions found
 	}
 
-	limits, err := c.ParseSessionJSONL(sessionPath)
-	if err != nil {
-		return nil, err
+	var parseErr error
+	for _, sessionPath := range sessions {
+		limits, err := c.ParseSessionJSONL(sessionPath)
+		if err != nil {
+			if parseErr == nil {
+				parseErr = fmt.Errorf("parsing %s: %w", sessionPath, err)
+			}
+			continue
+		}
+		if limits == nil || (limits.Primary == nil && limits.Secondary == nil) {
+			continue
+		}
+		c.rateLimits = limits
+		return limits, nil
 	}
 
-	c.rateLimits = limits
-	return limits, nil
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return nil, nil
 }
 
 // GetUsedPercent returns the used percentage based on mode.
@@ -230,9 +219,12 @@ func (c *Codex) GetRateLimits() (*CodexRateLimits, error) {
 func (c *Codex) GetUsedPercent(mode string, weeklyBudget int64) (float64, error) {
 	switch mode {
 	case "daily":
-		pct, err := c.GetPrimaryUsedPercent()
-		if err == nil && pct > 0 {
-			return pct, nil
+		limits, err := c.GetRateLimits()
+		if err != nil {
+			return 0, err
+		}
+		if limits != nil && limits.Primary != nil {
+			return limits.Primary.UsedPercent, nil
 		}
 		// Fall back to token-based if no rate limit data
 		if weeklyBudget > 0 {
@@ -246,9 +238,12 @@ func (c *Codex) GetUsedPercent(mode string, weeklyBudget int64) (float64, error)
 		}
 		return 0, nil
 	case "weekly":
-		pct, err := c.GetSecondaryUsedPercent()
-		if err == nil && pct > 0 {
-			return pct, nil
+		limits, err := c.GetRateLimits()
+		if err != nil {
+			return 0, err
+		}
+		if limits != nil && limits.Secondary != nil {
+			return limits.Secondary.UsedPercent, nil
 		}
 		// Fall back to token-based if no rate limit data
 		if weeklyBudget > 0 {
@@ -265,8 +260,8 @@ func (c *Codex) GetUsedPercent(mode string, weeklyBudget int64) (float64, error)
 
 // UsageBreakdown contains both rate-limit and local token data for display.
 type UsageBreakdown struct {
-	PrimaryPct   float64        // 5h window used_percent from rate limit
-	WeeklyPct    float64        // weekly used_percent from rate limit
+	PrimaryPct   float64          // 5h window used_percent from rate limit
+	WeeklyPct    float64          // weekly used_percent from rate limit
 	TodayTokens  *CodexTokenUsage // local billable tokens today
 	WeeklyTokens *CodexTokenUsage // local billable tokens this week
 }
@@ -423,23 +418,35 @@ func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
 	// For a single event, use its values directly as the session usage
 	src := latest
 	if eventCount > 1 {
-		// Multiple events: compute delta (last - first = session usage)
-		src = &CodexTokenUsage{
+		// Multiple events: compute delta (last - first = session usage).
+		// If counters reset within a session and produce negative deltas,
+		// fall back to the latest absolute total.
+		delta := &CodexTokenUsage{
 			InputTokens:           latest.InputTokens - first.InputTokens,
 			CachedInputTokens:     latest.CachedInputTokens - first.CachedInputTokens,
 			OutputTokens:          latest.OutputTokens - first.OutputTokens,
 			ReasoningOutputTokens: latest.ReasoningOutputTokens - first.ReasoningOutputTokens,
 		}
+		if delta.InputTokens < 0 || delta.CachedInputTokens < 0 || delta.OutputTokens < 0 || delta.ReasoningOutputTokens < 0 {
+			src = latest
+		} else {
+			src = delta
+		}
 	}
 
+	input := nonNegative(src.InputTokens)
+	cached := nonNegative(src.CachedInputTokens)
+	output := nonNegative(src.OutputTokens)
+	reasoning := nonNegative(src.ReasoningOutputTokens)
+
 	// Compute billable TotalTokens = non-cached input + output + reasoning
-	nonCachedInput := src.InputTokens - src.CachedInputTokens
+	nonCachedInput := nonNegative(input - cached)
 	return &CodexTokenUsage{
-		InputTokens:           src.InputTokens,
-		CachedInputTokens:     src.CachedInputTokens,
-		OutputTokens:          src.OutputTokens,
-		ReasoningOutputTokens: src.ReasoningOutputTokens,
-		TotalTokens:           nonCachedInput + src.OutputTokens + src.ReasoningOutputTokens,
+		InputTokens:           input,
+		CachedInputTokens:     cached,
+		OutputTokens:          output,
+		ReasoningOutputTokens: reasoning,
+		TotalTokens:           nonCachedInput + output + reasoning,
 	}, nil
 }
 
@@ -447,7 +454,7 @@ func (c *Codex) ParseSessionTokenUsage(path string) (*CodexTokenUsage, error) {
 // modification time that actually contains token_count events with data.
 // This avoids returning stub sessions (started then exited, no data).
 func (c *Codex) FindMostRecentSessionWithData() (string, error) {
-	sessions, err := c.ListSessionFiles()
+	sessions, err := c.sessionFilesByModTime()
 	if err != nil {
 		return "", err
 	}
@@ -455,12 +462,34 @@ func (c *Codex) FindMostRecentSessionWithData() (string, error) {
 		return "", nil
 	}
 
+	for _, sessionPath := range sessions {
+		usage, err := c.ParseSessionTokenUsage(sessionPath)
+		if err != nil {
+			continue
+		}
+		if usage != nil {
+			return sessionPath, nil
+		}
+	}
+
+	return "", nil
+}
+
+// sessionFilesByModTime returns session paths sorted newest-first by mtime.
+func (c *Codex) sessionFilesByModTime() ([]string, error) {
+	sessions, err := c.ListSessionFiles()
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+
 	type fileInfo struct {
 		path    string
 		modTime time.Time
 	}
-	var files []fileInfo
-
+	files := make([]fileInfo, 0, len(sessions))
 	for _, s := range sessions {
 		info, err := os.Stat(s)
 		if err != nil {
@@ -468,26 +497,26 @@ func (c *Codex) FindMostRecentSessionWithData() (string, error) {
 		}
 		files = append(files, fileInfo{path: s, modTime: info.ModTime()})
 	}
-
 	if len(files) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].modTime.After(files[j].modTime)
 	})
 
+	paths := make([]string, 0, len(files))
 	for _, f := range files {
-		usage, err := c.ParseSessionTokenUsage(f.path)
-		if err != nil {
-			continue
-		}
-		if usage != nil {
-			return f.path, nil
-		}
+		paths = append(paths, f.path)
 	}
+	return paths, nil
+}
 
-	return "", nil
+func nonNegative(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 // ListTodaySessionFiles returns session files for today's date.

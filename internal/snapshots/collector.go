@@ -28,7 +28,6 @@ type ClaudeUsage interface {
 
 // CodexUsage defines local usage access for Codex.
 type CodexUsage interface {
-	ListSessionFiles() ([]string, error)
 	GetTodayTokens() (int64, error)
 	GetWeeklyTokens() (int64, error)
 }
@@ -388,11 +387,11 @@ func nullString(value string) any {
 func codexTokenTotals(codex CodexUsage) (int64, int64, error) {
 	weekly, err := codex.GetWeeklyTokens()
 	if err != nil {
-		weekly = 0
+		return 0, 0, fmt.Errorf("get weekly tokens: %w", err)
 	}
 	daily, err := codex.GetTodayTokens()
 	if err != nil {
-		daily = 0
+		return 0, 0, fmt.Errorf("get today tokens: %w", err)
 	}
 	return weekly, daily, nil
 }

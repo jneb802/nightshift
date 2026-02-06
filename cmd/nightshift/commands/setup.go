@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -99,6 +100,7 @@ type setupModel struct {
 	taskPresetCursor int
 	taskCursor       int
 	taskItems        []taskItem
+	taskErr          string
 	preset           setup.Preset
 
 	scheduleMode      string
@@ -186,6 +188,11 @@ func newSetupModel() (*setupModel, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
+	}
+	// Keep task registry aligned with current config so setup can display custom tasks.
+	tasks.ClearCustom()
+	if err := tasks.RegisterCustomTasksFromConfig(cfg.Tasks.Custom); err != nil {
+		return nil, fmt.Errorf("register custom tasks: %w", err)
 	}
 	configPath := config.GlobalConfigPath()
 	_, err = os.Stat(configPath)
@@ -418,16 +425,24 @@ func (m *setupModel) View() string {
 		b.WriteString(styleAccent.Render("Tasks"))
 		b.WriteString("\n")
 		b.WriteString("Space to toggle, ↑/↓ to move.\n\n")
-		for i, item := range m.taskItems {
-			cursor := " "
-			if i == m.taskCursor {
-				cursor = ">"
+		if len(m.taskItems) == 0 {
+			b.WriteString(styleWarn.Render("No task definitions found."))
+			b.WriteString("\n")
+		} else {
+			for i, item := range m.taskItems {
+				cursor := " "
+				if i == m.taskCursor {
+					cursor = ">"
+				}
+				check := " "
+				if item.selected {
+					check = "x"
+				}
+				b.WriteString(fmt.Sprintf(" %s [%s] %-22s %s\n", cursor, check, item.def.Type, item.def.Name))
 			}
-			check := " "
-			if item.selected {
-				check = "x"
-			}
-			b.WriteString(fmt.Sprintf(" %s [%s] %-22s %s\n", cursor, check, item.def.Type, item.def.Name))
+		}
+		if m.taskErr != "" {
+			b.WriteString("\nError: " + m.taskErr + "\n")
 		}
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepSchedule:
@@ -662,8 +677,13 @@ func (m *setupModel) handleProjectsInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			path := expandPath(value)
-			if _, err := os.Stat(path); err != nil {
+			info, err := os.Stat(path)
+			if err != nil {
 				m.projectErr = "path not found"
+				return m, nil
+			}
+			if !info.IsDir() {
+				m.projectErr = "path must be a directory"
 				return m, nil
 			}
 			m.projects = append(m.projects, value)
@@ -797,6 +817,13 @@ func (m *setupModel) handleSafetyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *setupModel) handleTaskInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.taskItems) == 0 {
+		if msg.String() == "enter" {
+			m.taskErr = "no task definitions available"
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if m.taskCursor > 0 {
@@ -808,8 +835,14 @@ func (m *setupModel) handleTaskInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case " ":
 		m.taskItems[m.taskCursor].selected = !m.taskItems[m.taskCursor].selected
+		m.taskErr = ""
 	case "enter":
+		if !m.hasSelectedTasks() {
+			m.taskErr = "select at least one task"
+			return m, nil
+		}
 		m.applyTasks()
+		m.taskErr = ""
 		return m, m.setStep(stepSchedule)
 	}
 	return m, nil
@@ -990,14 +1023,14 @@ func (m *setupModel) applyBudgetEdit() error {
 		m.cfg.Budget.Mode = value
 	case 1:
 		v, err := strconv.Atoi(value)
-		if err != nil || v <= 0 {
-			return fmt.Errorf("max_percent must be positive")
+		if err != nil || v < 1 || v > 100 {
+			return fmt.Errorf("max_percent must be between 1 and 100")
 		}
 		m.cfg.Budget.MaxPercent = v
 	case 2:
 		v, err := strconv.Atoi(value)
-		if err != nil || v < 0 {
-			return fmt.Errorf("reserve_percent must be >= 0")
+		if err != nil || v < 0 || v > 100 {
+			return fmt.Errorf("reserve_percent must be between 0 and 100")
 		}
 		m.cfg.Budget.ReservePercent = v
 	case 3:
@@ -1033,6 +1066,15 @@ func (m *setupModel) applyTasks() {
 		}
 	}
 	m.cfg.Tasks.Enabled = selected
+}
+
+func (m *setupModel) hasSelectedTasks() bool {
+	for _, item := range m.taskItems {
+		if item.selected {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *setupModel) scheduleFieldValue() string {
@@ -1317,7 +1359,7 @@ func ensurePathInShell(configPath, shell, dir string) (bool, error) {
 		return false, err
 	}
 
-	if strings.Contains(existing, dir) {
+	if shellConfigHasPath(existing, dir) {
 		return false, nil
 	}
 
@@ -1335,6 +1377,43 @@ func pathExportLine(shell, dir string) string {
 	default:
 		return fmt.Sprintf("export PATH=\"$PATH:%s\"", dir)
 	}
+}
+
+func shellConfigHasPath(content, dir string) bool {
+	target := filepath.Clean(dir)
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.Contains(trimmed, "PATH") {
+			continue
+		}
+		if containsPathToken(trimmed, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPathToken(line, target string) bool {
+	tokens := strings.FieldsFunc(line, func(r rune) bool {
+		if unicode.IsSpace(r) {
+			return true
+		}
+		switch r {
+		case ':', ';', '"', '\'', '=', '$', '{', '}', '(', ')':
+			return true
+		default:
+			return false
+		}
+	})
+	for _, token := range tokens {
+		if filepath.Clean(token) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func installNightshiftBinary(targetDir string) (string, error) {
@@ -1523,9 +1602,12 @@ func scheduleFieldHelp(cursor int, mode string) string {
 }
 
 func makeTaskItems(cfg *config.Config, projects []string, preset setup.Preset) []taskItem {
-	defs := tasks.AllDefinitions()
+	defs := tasks.AllDefinitionsSorted()
 	signals := setup.DetectRepoSignals(projects)
 	selected := setup.PresetTasks(preset, defs, signals)
+	for _, enabled := range cfg.Tasks.Enabled {
+		selected[tasks.TaskType(enabled)] = true
+	}
 
 	items := make([]taskItem, 0, len(defs))
 	for _, def := range defs {

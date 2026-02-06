@@ -169,7 +169,7 @@ budget:
 providers:
   codex:
     enabled: true
-    datapath: ~/.codex
+    data_path: ~/.codex
 ```
 
 ## Snapshot Schema
