@@ -48,16 +48,23 @@ type DailyStat struct {
 
 // SessionMessage represents a single message in a session JSONL file.
 type SessionMessage struct {
-	Type  string       `json:"type"`
-	Usage *TokenUsage  `json:"usage,omitempty"`
+	Type      string          `json:"type"`
+	Message   *MessageContent `json:"message,omitempty"`
+	Timestamp time.Time       `json:"timestamp"`
+}
+
+// MessageContent holds the nested message object from Claude JSONL.
+type MessageContent struct {
+	Model string      `json:"model,omitempty"`
+	Usage *TokenUsage `json:"usage,omitempty"`
 }
 
 // TokenUsage holds per-message token counts.
 type TokenUsage struct {
-	InputTokens              int64 `json:"inputTokens"`
-	OutputTokens             int64 `json:"outputTokens"`
-	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
 // TotalTokens returns the sum of all token fields.
@@ -182,11 +189,11 @@ func ParseSessionJSONL(path string) (*TokenUsage, error) {
 			line = bytes.TrimRight(line, "\r\n")
 			if len(line) > 0 {
 				var msg SessionMessage
-				if jsonErr := json.Unmarshal(line, &msg); jsonErr == nil && msg.Usage != nil {
-					total.InputTokens += msg.Usage.InputTokens
-					total.OutputTokens += msg.Usage.OutputTokens
-					total.CacheReadInputTokens += msg.Usage.CacheReadInputTokens
-					total.CacheCreationInputTokens += msg.Usage.CacheCreationInputTokens
+				if jsonErr := json.Unmarshal(line, &msg); jsonErr == nil && msg.Message != nil && msg.Message.Usage != nil {
+					total.InputTokens += msg.Message.Usage.InputTokens
+					total.OutputTokens += msg.Message.Usage.OutputTokens
+					total.CacheReadInputTokens += msg.Message.Usage.CacheReadInputTokens
+					total.CacheCreationInputTokens += msg.Message.Usage.CacheCreationInputTokens
 				}
 			}
 		}

@@ -153,10 +153,10 @@ func TestParseSessionJSONL(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
-	content := `{"type":"user","content":"hello"}
-{"type":"assistant","content":"Hi!","usage":{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":20,"cacheCreationInputTokens":10}}
-{"type":"user","content":"how are you?"}
-{"type":"assistant","content":"Good!","usage":{"inputTokens":200,"outputTokens":100,"cacheReadInputTokens":30,"cacheCreationInputTokens":0}}
+	content := `{"type":"human","message":{"content":"hello"}}
+{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+{"type":"human","message":{"content":"how are you?"}}
+{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":200,"output_tokens":100,"cache_read_input_tokens":30,"cache_creation_input_tokens":0}}}
 `
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
@@ -206,8 +206,8 @@ func TestParseSessionJSONL_NoUsage(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionPath := filepath.Join(tmpDir, "session.jsonl")
 
-	content := `{"type":"user","content":"hello"}
-{"type":"assistant","content":"Hi!"}
+	content := `{"type":"human","message":{"content":"hello"}}
+{"type":"assistant","message":{"content":"Hi!"}}
 `
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
@@ -229,8 +229,8 @@ func TestParseSessionJSONL_LargeLines(t *testing.T) {
 
 	// Write a line that exceeds 1MB (old scanner limit)
 	bigContent := strings.Repeat("x", 2*1024*1024)
-	content := `{"type":"assistant","content":"` + bigContent + `"}
-{"type":"assistant","content":"ok","usage":{"inputTokens":500,"outputTokens":100,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}
+	content := `{"type":"assistant","message":{"content":"` + bigContent + `"}}
+{"type":"assistant","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
 `
 
 	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
