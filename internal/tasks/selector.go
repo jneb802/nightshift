@@ -78,9 +78,13 @@ func (s *Selector) ScoreTask(taskType TaskType, project string) float64 {
 }
 
 // FilterEnabled returns only enabled tasks from the given list.
+// Tasks with DisabledByDefault require explicit inclusion in tasks.enabled.
 func (s *Selector) FilterEnabled(tasks []TaskDefinition) []TaskDefinition {
 	filtered := make([]TaskDefinition, 0, len(tasks))
 	for _, t := range tasks {
+		if t.DisabledByDefault && !s.cfg.IsTaskExplicitlyEnabled(string(t.Type)) {
+			continue
+		}
 		if s.cfg.IsTaskEnabled(string(t.Type)) {
 			filtered = append(filtered, t)
 		}

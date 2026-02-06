@@ -1,11 +1,17 @@
-.PHONY: build test coverage lint clean help
+.PHONY: build test test-verbose test-race coverage coverage-html lint clean deps check install help
 
 # Binary name
 BINARY=nightshift
+PKG=./cmd/nightshift
 
 # Build the binary
 build:
-	go build -o $(BINARY) ./cmd/nightshift
+	go build -o $(BINARY) $(PKG)
+
+# Install the binary to your Go bin directory
+install:
+	go install $(PKG)
+	@echo "Installed $(BINARY) to $$(if [ -n "$$(go env GOBIN)" ]; then go env GOBIN; else echo "$$(go env GOPATH)/bin"; fi)"
 
 # Run all tests
 test:
@@ -63,4 +69,5 @@ help:
 	@echo "  clean         - Clean build artifacts"
 	@echo "  deps          - Download and tidy dependencies"
 	@echo "  check         - Run tests and lint"
+	@echo "  install       - Build and install to Go bin directory"
 	@echo "  help          - Show this help"

@@ -150,6 +150,40 @@ func TestFilterEnabled(t *testing.T) {
 	}
 }
 
+func TestFilterEnabled_DisabledByDefault(t *testing.T) {
+	st := newTestState(t)
+
+	tasks := []TaskDefinition{
+		{Type: TaskLintFix},
+		{Type: TaskTDReview, DisabledByDefault: true},
+	}
+
+	// Empty enabled list: DisabledByDefault tasks should be excluded
+	cfg := &config.Config{
+		Tasks: config.TasksConfig{},
+	}
+	sel := NewSelector(cfg, st)
+	got := sel.FilterEnabled(tasks)
+	if len(got) != 1 {
+		t.Errorf("FilterEnabled() with empty enabled: len = %d, want 1", len(got))
+	}
+	if len(got) > 0 && got[0].Type != TaskLintFix {
+		t.Errorf("FilterEnabled() kept %s, want %s", got[0].Type, TaskLintFix)
+	}
+
+	// Explicit enabled list including td-review: should be included
+	cfg2 := &config.Config{
+		Tasks: config.TasksConfig{
+			Enabled: []string{string(TaskLintFix), string(TaskTDReview)},
+		},
+	}
+	sel2 := NewSelector(cfg2, st)
+	got2 := sel2.FilterEnabled(tasks)
+	if len(got2) != 2 {
+		t.Errorf("FilterEnabled() with explicit enabled: len = %d, want 2", len(got2))
+	}
+}
+
 func TestFilterByBudget(t *testing.T) {
 	sel, _ := setupTestSelector(t)
 
