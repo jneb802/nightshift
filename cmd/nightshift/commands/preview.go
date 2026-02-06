@@ -68,6 +68,12 @@ func runPreview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// Register custom tasks from config
+	tasks.ClearCustom()
+	if err := tasks.RegisterCustomTasksFromConfig(cfg.Tasks.Custom); err != nil {
+		return fmt.Errorf("register custom tasks: %w", err)
+	}
+
 	database, err := db.Open(cfg.ExpandedDBPath())
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)

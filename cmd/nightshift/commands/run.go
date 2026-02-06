@@ -111,6 +111,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Register custom tasks from config
+	tasks.ClearCustom()
+	if err := tasks.RegisterCustomTasksFromConfig(cfg.Tasks.Custom); err != nil {
+		return fmt.Errorf("register custom tasks: %w", err)
+	}
+
 	// Create task selector
 	selector := tasks.NewSelector(cfg, st)
 
