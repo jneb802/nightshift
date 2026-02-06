@@ -48,6 +48,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	projectPath, _ := cmd.Flags().GetString("project")
 	taskFilter, _ := cmd.Flags().GetString("task")
 
+	// Augment PATH so provider CLIs are discoverable when launched
+	// from launchd/systemd/cron which have a minimal PATH.
+	ensurePATH()
+
 	// Set up context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -548,4 +552,49 @@ func expandPath(path string) string {
 		return filepath.Join(home, path[1:])
 	}
 	return path
+}
+
+// ensurePATH augments the current PATH with common bin directories so that
+// provider CLIs (claude, codex) are discoverable even when nightshift is
+// launched from launchd, systemd, or cron which provide a minimal PATH.
+func ensurePATH() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	extra := []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "go", "bin"),
+		filepath.Join(home, ".cargo", "bin"),
+		filepath.Join(home, ".npm-global", "bin"),
+		"/usr/local/bin",
+		"/opt/homebrew/bin",
+	}
+
+	// Also include $GOPATH/bin if set
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		extra = append(extra, filepath.Join(gopath, "bin"))
+	}
+
+	current := os.Getenv("PATH")
+	existing := make(map[string]bool)
+	for _, p := range strings.Split(current, string(os.PathListSeparator)) {
+		existing[p] = true
+	}
+
+	var added []string
+	for _, dir := range extra {
+		if existing[dir] {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			added = append(added, dir)
+		}
+	}
+
+	if len(added) > 0 {
+		newPath := current + string(os.PathListSeparator) + strings.Join(added, string(os.PathListSeparator))
+		os.Setenv("PATH", newPath)
+	}
 }

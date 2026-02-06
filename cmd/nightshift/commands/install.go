@@ -163,6 +163,9 @@ func generateLaunchdPlist(binaryPath string, cfg *config.Config) string {
 	// Parse schedule for launchd calendar interval
 	hour, minute := parseScheduleTime(cfg)
 
+	// Capture the current PATH so launchd jobs can find provider CLIs.
+	pathValue := os.Getenv("PATH")
+
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -174,6 +177,11 @@ func generateLaunchdPlist(binaryPath string, cfg *config.Config) string {
         <string>%s</string>
         <string>run</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>%s</string>
+    </dict>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -189,7 +197,7 @@ func generateLaunchdPlist(binaryPath string, cfg *config.Config) string {
     <false/>
 </dict>
 </plist>
-`, binaryPath, hour, minute, getLogPath("stdout"), getLogPath("stderr"))
+`, binaryPath, pathValue, hour, minute, getLogPath("stdout"), getLogPath("stderr"))
 }
 
 // installSystemd creates and enables systemd user service and timer

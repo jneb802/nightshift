@@ -173,6 +173,10 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 }
 
 func runDaemonLoop(cfg *config.Config) error {
+	// Augment PATH so provider CLIs are discoverable when launched
+	// from launchd/systemd/cron which have a minimal PATH.
+	ensurePATH()
+
 	// Initialize logging
 	if err := initLogging(cfg); err != nil {
 		return fmt.Errorf("init logging: %w", err)

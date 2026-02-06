@@ -51,6 +51,9 @@ func init() {
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
+	// Augment PATH the same way 'run' does so CLI checks are accurate.
+	ensurePATH()
+
 	results := make([]checkResult, 0)
 	hasFail := false
 
@@ -88,6 +91,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	checkService(add)
 	checkDaemon(add)
 
+	checkCLIs(cfg, add)
 	claudeProvider, codexProvider := checkProviders(cfg, add)
 	checkBudget(cfg, database, claudeProvider, codexProvider, add)
 	checkSnapshots(cfg, database, add)
@@ -171,6 +175,23 @@ func checkDaemon(add func(string, checkStatus, string)) {
 		add("daemon", statusOK, fmt.Sprintf("running (pid %d)", pid))
 	} else {
 		add("daemon", statusWarn, "pid file present but process not running")
+	}
+}
+
+func checkCLIs(cfg *config.Config, add func(string, checkStatus, string)) {
+	if cfg.Providers.Claude.Enabled {
+		if path, err := exec.LookPath("claude"); err != nil {
+			add("claude.cli", statusFail, "claude not found in PATH")
+		} else {
+			add("claude.cli", statusOK, path)
+		}
+	}
+	if cfg.Providers.Codex.Enabled {
+		if path, err := exec.LookPath("codex"); err != nil {
+			add("codex.cli", statusFail, "codex not found in PATH")
+		} else {
+			add("codex.cli", statusOK, path)
+		}
 	}
 }
 
