@@ -208,8 +208,16 @@ func ParseSessionJSONL(path string) (*TokenUsage, error) {
 	return total, nil
 }
 
-// GetTodayUsage returns today's total token usage from stats-cache.
+// GetTodayUsage returns today's total token usage.
+// Primary source: direct JSONL scanning (ground truth, immune to cache rebuilds).
+// Fallback: stats-cache.json (if JSONL scan returns 0, e.g. projects dir missing).
 func (c *Claude) GetTodayUsage() (int64, error) {
+	tokens, err := c.ScanTodayTokens()
+	if err == nil && tokens > 0 {
+		return tokens, nil
+	}
+
+	// Fallback to stats-cache
 	stats, err := c.ParseStatsCache()
 	if err != nil {
 		return 0, err
@@ -218,14 +226,21 @@ func (c *Claude) GetTodayUsage() (int64, error) {
 
 	today := time.Now().Format("2006-01-02")
 	byDate := stats.TokensByDate()
-	if tokens, ok := byDate[today]; ok {
-		return tokens, nil
+	if t, ok := byDate[today]; ok {
+		return t, nil
 	}
 	return 0, nil
 }
 
 // GetWeeklyUsage returns the last 7 days total token usage.
+// Primary source: direct JSONL scanning. Fallback: stats-cache.json.
 func (c *Claude) GetWeeklyUsage() (int64, error) {
+	tokens, err := c.ScanWeeklyTokens()
+	if err == nil && tokens > 0 {
+		return tokens, nil
+	}
+
+	// Fallback to stats-cache
 	stats, err := c.ParseStatsCache()
 	if err != nil {
 		return 0, err
