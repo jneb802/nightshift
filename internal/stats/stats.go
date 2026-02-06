@@ -53,9 +53,9 @@ func (d Duration) String() string {
 // StatsResult holds all computed statistics, JSON-serializable.
 type StatsResult struct {
 	// Run overview
-	TotalRuns      int       `json:"total_runs"`
-	FirstRunAt     time.Time `json:"first_run_at,omitempty"`
-	LastRunAt      time.Time `json:"last_run_at,omitempty"`
+	TotalRuns  int        `json:"total_runs"`
+	FirstRunAt *time.Time `json:"first_run_at,omitempty"`
+	LastRunAt  *time.Time `json:"last_run_at,omitempty"`
 	TotalDuration  Duration  `json:"total_duration"`
 	AvgRunDuration Duration  `json:"avg_run_duration"`
 
@@ -195,10 +195,24 @@ func (s *Stats) computeFromReports(result *StatsResult, reports []*reporting.Run
 		return
 	}
 
+	result.TotalRuns = len(reports)
+
 	projectTaskCounts := make(map[string]int)
 	prURLSet := make(map[string]struct{})
 
 	for _, r := range reports {
+		// Date range from reports
+		if !r.StartTime.IsZero() {
+			if result.FirstRunAt == nil || r.StartTime.Before(*result.FirstRunAt) {
+				t := r.StartTime
+				result.FirstRunAt = &t
+			}
+			if result.LastRunAt == nil || r.StartTime.After(*result.LastRunAt) {
+				t := r.StartTime
+				result.LastRunAt = &t
+			}
+		}
+
 		// Duration
 		if !r.StartTime.IsZero() && !r.EndTime.IsZero() {
 			result.TotalDuration.Duration += r.EndTime.Sub(r.StartTime)
@@ -273,14 +287,16 @@ func (s *Stats) computeFromRunHistory(result *StatsResult) {
 		return
 	}
 
-	// Total run count
+	// Total run count — use max of DB and report-derived count
 	row := sqlDB.QueryRow(`SELECT COUNT(*) FROM run_history`)
 	var count int
 	if err := row.Scan(&count); err != nil {
 		log.Printf("stats: count run_history: %v", err)
 		return
 	}
-	result.TotalRuns = count
+	if count > result.TotalRuns {
+		result.TotalRuns = count
+	}
 
 	if count == 0 {
 		return
@@ -292,11 +308,11 @@ func (s *Stats) computeFromRunHistory(result *StatsResult) {
 	if err := row.Scan(&firstRun, &lastRun); err != nil {
 		log.Printf("stats: run_history min/max: %v", err)
 	} else {
-		if firstRun.Valid {
-			result.FirstRunAt = firstRun.Time
+		if firstRun.Valid && (result.FirstRunAt == nil || firstRun.Time.Before(*result.FirstRunAt)) {
+			result.FirstRunAt = &firstRun.Time
 		}
-		if lastRun.Valid {
-			result.LastRunAt = lastRun.Time
+		if lastRun.Valid && (result.LastRunAt == nil || lastRun.Time.After(*result.LastRunAt)) {
+			result.LastRunAt = &lastRun.Time
 		}
 	}
 
