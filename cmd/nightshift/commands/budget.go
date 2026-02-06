@@ -258,7 +258,7 @@ func printTokenAccountingNote(provider string, estimate budget.BudgetEstimate) {
 	}
 	switch provider {
 	case "claude":
-		fmt.Printf("  Note:         tokens from stats-cache.json (Claude Code's internal accounting)\n")
+		fmt.Printf("  Note:         tokens from stats-cache.json; JSONL fallback if cache missing\n")
 	case "codex":
 		fmt.Printf("  Note:         %% from rate limit; tokens = billable (excludes cached input)\n")
 	}

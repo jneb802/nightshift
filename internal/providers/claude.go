@@ -209,52 +209,54 @@ func ParseSessionJSONL(path string) (*TokenUsage, error) {
 }
 
 // GetTodayUsage returns today's total token usage.
-// Primary source: direct JSONL scanning (ground truth, immune to cache rebuilds).
-// Fallback: stats-cache.json (if JSONL scan returns 0, e.g. projects dir missing).
+// Primary source: stats-cache.json (dailyModelTokens) — this is the metric the
+// calibrator was trained against, so budget ratios stay consistent.
+// Fallback: direct JSONL scanning if stats-cache is missing or has no entry for today.
+// Note: JSONL input_tokens+output_tokens ≠ dailyModelTokens (Claude Code uses its
+// own aggregation), so JSONL fallback is approximate.
 func (c *Claude) GetTodayUsage() (int64, error) {
-	tokens, err := c.ScanTodayTokens()
-	if err == nil && tokens > 0 {
+	stats, err := c.ParseStatsCache()
+	if err == nil {
+		c.statsCache = stats
+		today := time.Now().Format("2006-01-02")
+		byDate := stats.TokensByDate()
+		if t, ok := byDate[today]; ok && t > 0 {
+			return t, nil
+		}
+	}
+
+	// Fallback: scan JSONL directly (approximate — different metric)
+	tokens, scanErr := c.ScanTodayTokens()
+	if scanErr == nil && tokens > 0 {
 		return tokens, nil
 	}
-
-	// Fallback to stats-cache
-	stats, err := c.ParseStatsCache()
-	if err != nil {
-		return 0, err
-	}
-	c.statsCache = stats
-
-	today := time.Now().Format("2006-01-02")
-	byDate := stats.TokensByDate()
-	if t, ok := byDate[today]; ok {
-		return t, nil
-	}
-	return 0, nil
+	return 0, err
 }
 
 // GetWeeklyUsage returns the last 7 days total token usage.
-// Primary source: direct JSONL scanning. Fallback: stats-cache.json.
+// Primary: stats-cache.json. Fallback: direct JSONL scanning.
 func (c *Claude) GetWeeklyUsage() (int64, error) {
-	tokens, err := c.ScanWeeklyTokens()
-	if err == nil && tokens > 0 {
+	stats, err := c.ParseStatsCache()
+	if err == nil {
+		c.statsCache = stats
+		byDate := stats.TokensByDate()
+		var total int64
+		now := time.Now()
+		for i := range 7 {
+			date := now.AddDate(0, 0, -i).Format("2006-01-02")
+			total += byDate[date]
+		}
+		if total > 0 {
+			return total, nil
+		}
+	}
+
+	// Fallback: scan JSONL directly (approximate)
+	tokens, scanErr := c.ScanWeeklyTokens()
+	if scanErr == nil && tokens > 0 {
 		return tokens, nil
 	}
-
-	// Fallback to stats-cache
-	stats, err := c.ParseStatsCache()
-	if err != nil {
-		return 0, err
-	}
-	c.statsCache = stats
-
-	byDate := stats.TokensByDate()
-	var total int64
-	now := time.Now()
-	for i := range 7 {
-		date := now.AddDate(0, 0, -i).Format("2006-01-02")
-		total += byDate[date]
-	}
-	return total, nil
+	return 0, err
 }
 
 // GetUsedPercent calculates the used percentage based on mode and budget.
