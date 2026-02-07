@@ -195,9 +195,11 @@ func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.
 		return nil, fmt.Errorf("no providers enabled in config")
 	}
 
+	var notInPath, budgetExhausted []string
 	for _, c := range candidates {
 		if _, err := exec.LookPath(c.binary); err != nil {
 			log.Infof("provider %s: CLI not in PATH, skipping", c.name)
+			notInPath = append(notInPath, c.name)
 			continue
 		}
 		allowance, err := budgetMgr.CalculateAllowance(c.name)
@@ -207,6 +209,7 @@ func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.
 		}
 		if allowance.Allowance <= 0 {
 			log.Infof("provider %s: budget exhausted (%.1f%% used)", c.name, allowance.UsedPercent)
+			budgetExhausted = append(budgetExhausted, fmt.Sprintf("%s (%.0f%% used)", c.name, allowance.UsedPercent))
 			continue
 		}
 		return &providerChoice{
@@ -216,7 +219,17 @@ func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.
 		}, nil
 	}
 
-	return nil, fmt.Errorf("no providers available with remaining budget")
+	if len(notInPath) > 0 && len(budgetExhausted) == 0 {
+		return nil, fmt.Errorf("CLI not in PATH: %s", strings.Join(notInPath, ", "))
+	}
+	if len(budgetExhausted) > 0 && len(notInPath) == 0 {
+		return nil, fmt.Errorf("budget exhausted: %s", strings.Join(budgetExhausted, ", "))
+	}
+	if len(budgetExhausted) > 0 && len(notInPath) > 0 {
+		return nil, fmt.Errorf("budget exhausted: %s; CLI not in PATH: %s",
+			strings.Join(budgetExhausted, ", "), strings.Join(notInPath, ", "))
+	}
+	return nil, fmt.Errorf("no providers available")
 }
 
 func providerPreference(cfg *config.Config) []string {
@@ -247,6 +260,7 @@ func providerPreference(cfg *config.Config) []string {
 func executeRun(ctx context.Context, p executeRunParams) error {
 	start := time.Now()
 	var tasksRun, tasksCompleted, tasksFailed int
+	var skipReasons []string
 
 	// Process each project
 	for _, projectPath := range p.projects {
@@ -260,6 +274,8 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 		// Skip if already processed today (unless task filter specified)
 		if p.taskFilter == "" && p.st.WasProcessedToday(projectPath) {
 			p.log.Infof("skip %s (processed today)", projectPath)
+			fmt.Printf("Skipping %s: already processed today\n", filepath.Base(projectPath))
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: already processed today", filepath.Base(projectPath)))
 			continue
 		}
 
@@ -267,6 +283,8 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 		choice, err := selectProvider(p.cfg, p.budgetMgr, p.log)
 		if err != nil {
 			p.log.Infof("no provider available: %v", err)
+			fmt.Printf("No provider available: %v\n", err)
+			skipReasons = append(skipReasons, fmt.Sprintf("no provider: %v", err))
 			break
 		}
 
@@ -322,6 +340,7 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			} else {
 				fmt.Println("No tasks available within budget")
 			}
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: %s", filepath.Base(projectPath), skipReason))
 
 			if p.report != nil {
 				p.report.addTask(reporting.TaskResult{
@@ -478,6 +497,13 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 	fmt.Printf("\n=== Run Complete ===\n")
 	fmt.Printf("Duration: %s\n", duration.Round(time.Second))
 	fmt.Printf("Tasks: %d run, %d completed, %d failed\n", tasksRun, tasksCompleted, tasksFailed)
+
+	if tasksRun == 0 && len(skipReasons) > 0 {
+		fmt.Println("\nNothing ran because:")
+		for _, reason := range skipReasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+	}
 
 	p.log.InfoCtx("run complete", map[string]any{
 		"duration":  duration.String(),

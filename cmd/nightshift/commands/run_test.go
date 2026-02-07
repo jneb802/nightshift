@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,84 @@ func TestSelectProvider_FallbackOnBudget(t *testing.T) {
 	}
 	if choice.name != "claude" {
 		t.Fatalf("provider = %s, want claude", choice.name)
+	}
+}
+
+func TestSelectProvider_NoProvidersEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Claude: config.ProviderConfig{Enabled: false},
+			Codex:  config.ProviderConfig{Enabled: false},
+		},
+	}
+	claude := &mockUsage{name: "claude", pct: 0}
+	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}}
+	budgetMgr := budget.NewManager(cfg, claude, codex)
+
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := err.Error(); got != "no providers enabled in config" {
+		t.Fatalf("error = %q, want %q", got, "no providers enabled in config")
+	}
+}
+
+func TestSelectProvider_AllBudgetExhausted(t *testing.T) {
+	tmp := t.TempDir()
+	makeExecutable(t, tmp, "claude")
+	makeExecutable(t, tmp, "codex")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Claude: config.ProviderConfig{Enabled: true},
+			Codex:  config.ProviderConfig{Enabled: true},
+		},
+		Budget: config.BudgetConfig{
+			Mode:         "daily",
+			MaxPercent:   75,
+			WeeklyTokens: 700000,
+		},
+	}
+	claude := &mockUsage{name: "claude", pct: 100}
+	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 100}}
+	budgetMgr := budget.NewManager(cfg, claude, codex)
+
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "budget exhausted") {
+		t.Fatalf("error = %q, want it to contain 'budget exhausted'", got)
+	}
+}
+
+func TestSelectProvider_CLINotInPath(t *testing.T) {
+	// Empty PATH so no CLIs are found
+	t.Setenv("PATH", t.TempDir())
+
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Claude: config.ProviderConfig{Enabled: true},
+			Codex:  config.ProviderConfig{Enabled: true},
+		},
+		Budget: config.BudgetConfig{
+			Mode:         "daily",
+			MaxPercent:   75,
+			WeeklyTokens: 700000,
+		},
+	}
+	claude := &mockUsage{name: "claude", pct: 0}
+	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}}
+	budgetMgr := budget.NewManager(cfg, claude, codex)
+
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "CLI not in PATH") {
+		t.Fatalf("error = %q, want it to contain 'CLI not in PATH'", got)
 	}
 }
 
