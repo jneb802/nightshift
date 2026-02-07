@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -287,25 +288,38 @@ func providerPreference(cfg *config.Config) []string {
 	return out
 }
 
-func executeRun(ctx context.Context, p executeRunParams) error {
-	start := time.Now()
-	var tasksRun, tasksCompleted, tasksFailed int
-	var skipReasons []string
+// preflightProject holds the planned tasks for a single project.
+type preflightProject struct {
+	path       string
+	tasks      []tasks.ScoredTask
+	provider   *providerChoice
+	skipReason string // non-empty if project was skipped
+}
 
-	// Process each project
+// preflightPlan collects all planned work before execution.
+type preflightPlan struct {
+	projects     []preflightProject
+	skipReasons  []string // global skip reasons (e.g., no provider)
+	ignoreBudget bool
+}
+
+// buildPreflight performs the planning phase: resolve provider, select tasks
+// per project, but does NOT execute anything.
+func buildPreflight(p executeRunParams) (*preflightPlan, error) {
+	plan := &preflightPlan{
+		ignoreBudget: p.ignoreBudget,
+	}
+
 	for _, projectPath := range p.projects {
-		select {
-		case <-ctx.Done():
-			p.log.Info("run cancelled")
-			return ctx.Err()
-		default:
-		}
-
 		// Skip if already processed today (unless task filter specified)
 		if p.taskFilter == "" && p.st.WasProcessedToday(projectPath) {
 			p.log.Infof("skip %s (processed today)", projectPath)
-			fmt.Printf("Skipping %s: already processed today\n", filepath.Base(projectPath))
-			skipReasons = append(skipReasons, fmt.Sprintf("%s: already processed today", filepath.Base(projectPath)))
+			reason := fmt.Sprintf("%s: already processed today", filepath.Base(projectPath))
+			plan.projects = append(plan.projects, preflightProject{
+				path:       projectPath,
+				skipReason: "already processed today",
+			})
+			plan.skipReasons = append(plan.skipReasons, reason)
 			continue
 		}
 
@@ -313,34 +327,17 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 		choice, err := selectProvider(p.cfg, p.budgetMgr, p.log, p.ignoreBudget)
 		if err != nil {
 			p.log.Infof("no provider available: %v", err)
-			fmt.Printf("No provider available: %v\n", err)
-			skipReasons = append(skipReasons, fmt.Sprintf("no provider: %v", err))
+			plan.skipReasons = append(plan.skipReasons, fmt.Sprintf("no provider: %v", err))
 			break
 		}
-
-		fmt.Printf("\n=== Project: %s ===\n", projectPath)
-		fmt.Printf("Provider: %s\n", choice.name)
-		fmt.Printf("Budget: %d tokens available (%.1f%% used, mode=%s)\n",
-			choice.allowance.Allowance, choice.allowance.UsedPercent, choice.allowance.Mode)
-
-		// Create orchestrator with the selected agent
-		orch := orchestrator.New(
-			orchestrator.WithAgent(choice.agent),
-			orchestrator.WithConfig(orchestrator.Config{
-				MaxIterations: 3,
-				AgentTimeout:  30 * time.Minute,
-			}),
-			orchestrator.WithLogger(logging.Component("orchestrator")),
-		)
 
 		// Select tasks
 		var selectedTasks []tasks.ScoredTask
 
 		if p.taskFilter != "" {
-			// Filter to specific task type
 			def, err := tasks.GetDefinition(tasks.TaskType(p.taskFilter))
 			if err != nil {
-				return fmt.Errorf("unknown task type: %s", p.taskFilter)
+				return nil, fmt.Errorf("unknown task type: %s", p.taskFilter)
 			}
 			selectedTasks = []tasks.ScoredTask{{
 				Definition: def,
@@ -348,7 +345,6 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 				Project:    projectPath,
 			}}
 		} else {
-			// Select top N tasks that fit budget
 			n := p.maxTasks
 			if n <= 0 {
 				n = 1
@@ -360,38 +356,150 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			selectedTasks = p.selector.SelectTopN(taskBudget, projectPath, n)
 		}
 
+		pp := preflightProject{
+			path:     projectPath,
+			tasks:    selectedTasks,
+			provider: choice,
+		}
+
 		if len(selectedTasks) == 0 {
-			// Diagnose why no tasks were selected
 			skipReason := "no tasks available within budget"
 			allEnabled := p.selector.FilterEnabled(tasks.AllDefinitions())
 			inBudget := p.selector.FilterByBudget(allEnabled, choice.allowance.Allowance)
 			unassigned := p.selector.FilterUnassigned(inBudget, projectPath)
 			afterCooldown := p.selector.FilterByCooldown(unassigned, projectPath)
 			cooledDown := len(unassigned) - len(afterCooldown)
-
 			if cooledDown > 0 {
 				skipReason = fmt.Sprintf("%d task(s) on cooldown", cooledDown)
-				fmt.Printf("No tasks available (%d on cooldown, %d enabled, %d in budget)\n", cooledDown, len(allEnabled), len(inBudget))
-				p.log.Infof("tasks skipped: %d on cooldown out of %d eligible", cooledDown, len(unassigned))
-			} else {
-				fmt.Println("No tasks available within budget")
 			}
-			skipReasons = append(skipReasons, fmt.Sprintf("%s: %s", filepath.Base(projectPath), skipReason))
+			pp.skipReason = skipReason
+			plan.skipReasons = append(plan.skipReasons, fmt.Sprintf("%s: %s", filepath.Base(projectPath), skipReason))
+		}
 
-			if p.report != nil {
-				p.report.addTask(reporting.TaskResult{
-					Project:    projectPath,
-					TaskType:   "",
-					Title:      "No tasks selected",
-					Status:     "skipped",
-					SkipReason: skipReason,
-				})
+		plan.projects = append(plan.projects, pp)
+	}
+
+	return plan, nil
+}
+
+// displayPreflight renders the preflight summary to the given writer.
+func displayPreflight(w io.Writer, plan *preflightPlan) {
+	fmt.Fprintf(w, "\n=== Preflight Summary ===\n")
+
+	// Show provider info from first project that has one
+	for _, pp := range plan.projects {
+		if pp.provider != nil {
+			fmt.Fprintf(w, "Provider: %s (%.1f%% budget used, %s mode)\n",
+				pp.provider.name, pp.provider.allowance.UsedPercent, pp.provider.allowance.Mode)
+			fmt.Fprintf(w, "Budget: %d tokens remaining\n", pp.provider.allowance.Allowance)
+			break
+		}
+	}
+
+	// Count active projects (those with tasks)
+	active := 0
+	for _, pp := range plan.projects {
+		if len(pp.tasks) > 0 {
+			active++
+		}
+	}
+	fmt.Fprintf(w, "\nProjects (%d of %d):\n", active, len(plan.projects))
+
+	idx := 0
+	for _, pp := range plan.projects {
+		if pp.skipReason != "" || len(pp.tasks) == 0 {
+			continue
+		}
+		idx++
+		fmt.Fprintf(w, "  %d. %s\n", idx, filepath.Base(pp.path))
+		for _, st := range pp.tasks {
+			minTok, maxTok := st.Definition.EstimatedTokens()
+			fmt.Fprintf(w, "     - %s (score=%.1f, cost=%s, ~%dk-%dk tokens)\n",
+				st.Definition.Name, st.Score, st.Definition.CostTier, minTok/1000, maxTok/1000)
+		}
+	}
+
+	// Skipped projects
+	var skipped []preflightProject
+	for _, pp := range plan.projects {
+		if pp.skipReason != "" {
+			skipped = append(skipped, pp)
+		}
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(w, "\nSkipped:\n")
+		for _, pp := range skipped {
+			fmt.Fprintf(w, "  - %s: %s\n", filepath.Base(pp.path), pp.skipReason)
+		}
+	}
+
+	// Warnings
+	if plan.ignoreBudget {
+		fmt.Fprintf(w, "\nWarnings:\n")
+		fmt.Fprintf(w, "  - --ignore-budget is set: budget limits bypassed\n")
+	}
+
+	fmt.Fprintln(w)
+}
+
+func executeRun(ctx context.Context, p executeRunParams) error {
+	start := time.Now()
+
+	// Build preflight plan
+	plan, err := buildPreflight(p)
+	if err != nil {
+		return err
+	}
+
+	// Display preflight summary
+	displayPreflight(os.Stdout, plan)
+
+	// Execute based on the plan
+	var tasksRun, tasksCompleted, tasksFailed int
+	var skipReasons []string
+	skipReasons = append(skipReasons, plan.skipReasons...)
+
+	for _, pp := range plan.projects {
+		select {
+		case <-ctx.Done():
+			p.log.Info("run cancelled")
+			return ctx.Err()
+		default:
+		}
+
+		if pp.skipReason != "" {
+			if pp.skipReason == "already processed today" {
+				fmt.Printf("Skipping %s: already processed today\n", filepath.Base(pp.path))
+			}
+			if pp.provider == nil && len(pp.tasks) == 0 {
+				// Skip reason already in plan.skipReasons
+				if p.report != nil {
+					p.report.addTask(reporting.TaskResult{
+						Project:    pp.path,
+						TaskType:   "",
+						Title:      "No tasks selected",
+						Status:     "skipped",
+						SkipReason: pp.skipReason,
+					})
+				}
 			}
 			continue
 		}
 
-		fmt.Printf("Selected %d task(s):\n", len(selectedTasks))
-		for i, st := range selectedTasks {
+		if len(pp.tasks) == 0 {
+			continue
+		}
+
+		choice := pp.provider
+		projectPath := pp.path
+
+		fmt.Printf("\n=== Project: %s ===\n", projectPath)
+		fmt.Printf("Provider: %s\n", choice.name)
+		fmt.Printf("Budget: %d tokens available (%.1f%% used, mode=%s)\n",
+			choice.allowance.Allowance, choice.allowance.UsedPercent, choice.allowance.Mode)
+
+		fmt.Printf("Selected %d task(s):\n", len(pp.tasks))
+		for i, st := range pp.tasks {
 			minTok, maxTok := st.Definition.EstimatedTokens()
 			fmt.Printf("  %d. %s (score=%.1f, cost=%s, tokens=%d-%d)\n",
 				i+1, st.Definition.Name, st.Score, st.Definition.CostTier, minTok, maxTok)
@@ -402,14 +510,24 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			continue
 		}
 
+		// Create orchestrator with the selected agent
+		orch := orchestrator.New(
+			orchestrator.WithAgent(choice.agent),
+			orchestrator.WithConfig(orchestrator.Config{
+				MaxIterations: 3,
+				AgentTimeout:  30 * time.Minute,
+			}),
+			orchestrator.WithLogger(logging.Component("orchestrator")),
+		)
+
 		projectStart := time.Now()
-		projectTaskTypes := make([]string, 0, len(selectedTasks))
+		projectTaskTypes := make([]string, 0, len(pp.tasks))
 		projectTokensUsed := 0
 		projectCompleted := 0
 		projectFailed := 0
 
 		// Execute each selected task
-		for _, scoredTask := range selectedTasks {
+		for _, scoredTask := range pp.tasks {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

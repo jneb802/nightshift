@@ -494,3 +494,353 @@ func TestSelectProvider_IgnoreBudget_False_StillRejectsBudget(t *testing.T) {
 		t.Fatalf("error = %q, want it to contain 'budget exhausted'", err.Error())
 	}
 }
+
+// --- Preflight tests ---
+
+// newPreflightParams creates a standard executeRunParams for preflight testing.
+func newPreflightParams(t *testing.T, projects []string) executeRunParams {
+	t.Helper()
+	tmp := t.TempDir()
+	makeExecutable(t, tmp, "claude")
+	makeExecutable(t, tmp, "codex")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st := newTestRunState(t)
+	cfg := newTestRunConfig()
+	selector := tasks.NewSelector(cfg, st)
+	budgetMgr := budget.NewManager(cfg,
+		&mockUsage{name: "claude", pct: 0},
+		&mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}},
+	)
+	return executeRunParams{
+		cfg:       cfg,
+		budgetMgr: budgetMgr,
+		selector:  selector,
+		st:        st,
+		projects:  projects,
+		maxTasks:  1,
+		dryRun:    true,
+		log:       logging.Component("test"),
+	}
+}
+
+func TestBuildPreflight_SingleProject(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+
+	plan, err := buildPreflight(params)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if len(plan.projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(plan.projects))
+	}
+	pp := plan.projects[0]
+	if pp.path != project {
+		t.Fatalf("path = %q, want %q", pp.path, project)
+	}
+	if pp.skipReason != "" {
+		t.Fatalf("skipReason = %q, want empty", pp.skipReason)
+	}
+	if len(pp.tasks) == 0 {
+		t.Fatal("expected at least 1 task")
+	}
+	if pp.provider == nil {
+		t.Fatal("expected provider to be set")
+	}
+	if pp.provider.name != "claude" {
+		t.Fatalf("provider = %q, want claude", pp.provider.name)
+	}
+}
+
+func TestBuildPreflight_SkippedProject(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+
+	// Mark project as processed today
+	params.st.RecordProjectRun(project)
+
+	plan, err := buildPreflight(params)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if len(plan.projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(plan.projects))
+	}
+	pp := plan.projects[0]
+	if pp.skipReason != "already processed today" {
+		t.Fatalf("skipReason = %q, want 'already processed today'", pp.skipReason)
+	}
+	if len(plan.skipReasons) == 0 {
+		t.Fatal("expected skip reasons to be populated")
+	}
+	if !strings.Contains(plan.skipReasons[0], "already processed today") {
+		t.Fatalf("skipReasons[0] = %q, want to contain 'already processed today'", plan.skipReasons[0])
+	}
+}
+
+func TestDisplayPreflight_OutputFormat(t *testing.T) {
+	plan := &preflightPlan{
+		projects: []preflightProject{
+			{
+				path: "/home/user/my-project",
+				tasks: []tasks.ScoredTask{
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Linter Fixes",
+							CostTier: tasks.CostLow,
+						},
+						Score:   7.2,
+						Project: "/home/user/my-project",
+					},
+				},
+				provider: &providerChoice{
+					name: "claude",
+					allowance: &budget.AllowanceResult{
+						Allowance:   27700,
+						UsedPercent: 72.3,
+						Mode:        "daily",
+					},
+				},
+			},
+		},
+	}
+
+	var buf strings.Builder
+	displayPreflight(&buf, plan)
+	output := buf.String()
+
+	checks := []string{
+		"Preflight Summary",
+		"Provider: claude",
+		"72.3% budget used",
+		"daily mode",
+		"27700 tokens remaining",
+		"Projects (1 of 1)",
+		"my-project",
+		"Linter Fixes",
+		"score=7.2",
+	}
+	for _, want := range checks {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q\nGot:\n%s", want, output)
+		}
+	}
+}
+
+func TestDisplayPreflight_IgnoreBudgetWarning(t *testing.T) {
+	plan := &preflightPlan{
+		ignoreBudget: true,
+		projects: []preflightProject{
+			{
+				path: "/home/user/proj",
+				tasks: []tasks.ScoredTask{
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Test Task",
+							CostTier: tasks.CostLow,
+						},
+						Score:   5.0,
+						Project: "/home/user/proj",
+					},
+				},
+				provider: &providerChoice{
+					name: "claude",
+					allowance: &budget.AllowanceResult{
+						Allowance:   0,
+						UsedPercent: 100,
+						Mode:        "daily",
+					},
+				},
+			},
+		},
+	}
+
+	var buf strings.Builder
+	displayPreflight(&buf, plan)
+	output := buf.String()
+
+	if !strings.Contains(output, "Warnings:") {
+		t.Errorf("output missing 'Warnings:'\nGot:\n%s", output)
+	}
+	if !strings.Contains(output, "--ignore-budget is set") {
+		t.Errorf("output missing '--ignore-budget is set'\nGot:\n%s", output)
+	}
+}
+
+func TestDisplayPreflight_MultipleTasks(t *testing.T) {
+	plan := &preflightPlan{
+		projects: []preflightProject{
+			{
+				path: "/home/user/proj",
+				tasks: []tasks.ScoredTask{
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Linter Fixes",
+							CostTier: tasks.CostLow,
+						},
+						Score:   7.0,
+						Project: "/home/user/proj",
+					},
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Bug Finder & Fixer",
+							CostTier: tasks.CostHigh,
+						},
+						Score:   5.5,
+						Project: "/home/user/proj",
+					},
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Doc Drift Detector",
+							CostTier: tasks.CostMedium,
+						},
+						Score:   3.2,
+						Project: "/home/user/proj",
+					},
+				},
+				provider: &providerChoice{
+					name: "claude",
+					allowance: &budget.AllowanceResult{
+						Allowance:   500000,
+						UsedPercent: 10.0,
+						Mode:        "daily",
+					},
+				},
+			},
+		},
+	}
+
+	var buf strings.Builder
+	displayPreflight(&buf, plan)
+	output := buf.String()
+
+	taskNames := []string{"Linter Fixes", "Bug Finder & Fixer", "Doc Drift Detector"}
+	for _, name := range taskNames {
+		if !strings.Contains(output, name) {
+			t.Errorf("output missing task %q\nGot:\n%s", name, output)
+		}
+	}
+
+	// Verify project count
+	if !strings.Contains(output, "Projects (1 of 1)") {
+		t.Errorf("output missing 'Projects (1 of 1)'\nGot:\n%s", output)
+	}
+}
+
+func TestDisplayPreflight_SkippedSection(t *testing.T) {
+	plan := &preflightPlan{
+		projects: []preflightProject{
+			{
+				path: "/home/user/active-proj",
+				tasks: []tasks.ScoredTask{
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Linter Fixes",
+							CostTier: tasks.CostLow,
+						},
+						Score:   5.0,
+						Project: "/home/user/active-proj",
+					},
+				},
+				provider: &providerChoice{
+					name: "claude",
+					allowance: &budget.AllowanceResult{
+						Allowance:   50000,
+						UsedPercent: 20.0,
+						Mode:        "daily",
+					},
+				},
+			},
+			{
+				path:       "/home/user/skipped-proj",
+				skipReason: "already processed today",
+			},
+		},
+	}
+
+	var buf strings.Builder
+	displayPreflight(&buf, plan)
+	output := buf.String()
+
+	if !strings.Contains(output, "Skipped:") {
+		t.Errorf("output missing 'Skipped:'\nGot:\n%s", output)
+	}
+	if !strings.Contains(output, "skipped-proj: already processed today") {
+		t.Errorf("output missing skipped project reason\nGot:\n%s", output)
+	}
+	if !strings.Contains(output, "Projects (1 of 2)") {
+		t.Errorf("output missing 'Projects (1 of 2)'\nGot:\n%s", output)
+	}
+}
+
+func TestBuildPreflight_TaskFilter(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.taskFilter = "lint-fix"
+
+	plan, err := buildPreflight(params)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if len(plan.projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(plan.projects))
+	}
+	pp := plan.projects[0]
+	if len(pp.tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(pp.tasks))
+	}
+	if string(pp.tasks[0].Definition.Type) != "lint-fix" {
+		t.Fatalf("task type = %q, want lint-fix", pp.tasks[0].Definition.Type)
+	}
+}
+
+func TestBuildPreflight_InvalidTaskFilter(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.taskFilter = "nonexistent-task"
+
+	_, err := buildPreflight(params)
+	if err == nil {
+		t.Fatal("expected error for invalid task filter")
+	}
+	if !strings.Contains(err.Error(), "unknown task type") {
+		t.Fatalf("error = %q, want to contain 'unknown task type'", err.Error())
+	}
+}
+
+func TestDisplayPreflight_NoWarningsWhenBudgetRespected(t *testing.T) {
+	plan := &preflightPlan{
+		ignoreBudget: false,
+		projects: []preflightProject{
+			{
+				path: "/home/user/proj",
+				tasks: []tasks.ScoredTask{
+					{
+						Definition: tasks.TaskDefinition{
+							Name:     "Test Task",
+							CostTier: tasks.CostLow,
+						},
+						Score: 5.0,
+					},
+				},
+				provider: &providerChoice{
+					name: "claude",
+					allowance: &budget.AllowanceResult{
+						Allowance:   50000,
+						UsedPercent: 20.0,
+						Mode:        "daily",
+					},
+				},
+			},
+		},
+	}
+
+	var buf strings.Builder
+	displayPreflight(&buf, plan)
+	output := buf.String()
+
+	if strings.Contains(output, "Warnings:") {
+		t.Errorf("output should not contain 'Warnings:' when ignoreBudget=false\nGot:\n%s", output)
+	}
+}
