@@ -492,18 +492,20 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 	// Display preflight summary
 	displayPreflight(os.Stdout, plan)
 
+	// Dry-run: show preflight and exit without executing
+	if p.dryRun {
+		fmt.Println("[dry-run] No tasks executed.")
+		return nil
+	}
+
 	// Confirm before proceeding
 	proceed, err := confirmRun(p)
 	if err != nil {
 		return err
 	}
 	if !proceed {
-		if p.dryRun {
-			// dry-run: continue to show per-project detail but skip execution
-		} else {
-			fmt.Println("Cancelled.")
-			return nil
-		}
+		fmt.Println("Cancelled.")
+		return nil
 	}
 
 	// Execute based on the plan
@@ -555,11 +557,6 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			minTok, maxTok := st.Definition.EstimatedTokens()
 			fmt.Printf("  %d. %s (score=%.1f, cost=%s, tokens=%d-%d)\n",
 				i+1, st.Definition.Name, st.Score, st.Definition.CostTier, minTok, maxTok)
-		}
-
-		if p.dryRun {
-			fmt.Println("[dry-run] would execute tasks above")
-			continue
 		}
 
 		// Create orchestrator with the selected agent

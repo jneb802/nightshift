@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -934,6 +935,106 @@ func TestConfirmRun_TTYDefaultRejectsEmpty(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("expected false on empty input (default=N)")
+	}
+}
+
+// --- Dry-run tests ---
+
+// captureStdout redirects os.Stdout, runs fn, and returns what was written.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	fn()
+
+	w.Close()
+	os.Stdout = origStdout
+
+	var buf strings.Builder
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return buf.String()
+}
+
+func TestDryRun_ShowsPreflightAndExits(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.dryRun = true
+
+	output := captureStdout(t, func() {
+		err := executeRun(context.Background(), params)
+		if err != nil {
+			t.Fatalf("executeRun: %v", err)
+		}
+	})
+
+	// Preflight summary should appear
+	if !strings.Contains(output, "Preflight Summary") {
+		t.Errorf("output missing 'Preflight Summary'\nGot:\n%s", output)
+	}
+	// Dry-run exit message should appear
+	if !strings.Contains(output, "[dry-run] No tasks executed.") {
+		t.Errorf("output missing '[dry-run] No tasks executed.'\nGot:\n%s", output)
+	}
+	// Should NOT contain execution output (project header from execute loop)
+	if strings.Contains(output, "=== Project:") {
+		t.Errorf("output should NOT contain execution output '=== Project:'\nGot:\n%s", output)
+	}
+}
+
+func TestDryRun_NoExecution(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.dryRun = true
+
+	output := captureStdout(t, func() {
+		err := executeRun(context.Background(), params)
+		if err != nil {
+			t.Fatalf("executeRun: %v", err)
+		}
+	})
+
+	// Must not contain any execution markers
+	executionMarkers := []string{
+		"=== Project:",
+		"--- Running:",
+		"COMPLETED",
+		"FAILED",
+		"ABANDONED",
+		"=== Run Complete ===",
+	}
+	for _, marker := range executionMarkers {
+		if strings.Contains(output, marker) {
+			t.Errorf("dry-run output should NOT contain %q\nGot:\n%s", marker, output)
+		}
+	}
+
+	// Verify no state was recorded (no project run recorded)
+	if params.st.WasProcessedToday(project) {
+		t.Error("dry-run should not record project as processed")
+	}
+}
+
+func TestDryRun_DisplaysMessage(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.dryRun = true
+
+	output := captureStdout(t, func() {
+		err := executeRun(context.Background(), params)
+		if err != nil {
+			t.Fatalf("executeRun: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "[dry-run] No tasks executed.") {
+		t.Errorf("output missing dry-run message\nGot:\n%s", output)
 	}
 }
 
