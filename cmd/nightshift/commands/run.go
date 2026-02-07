@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -42,6 +43,7 @@ func init() {
 	runCmd.Flags().StringP("task", "t", "", "Run specific task by name")
 	runCmd.Flags().Int("max-projects", 1, "Max projects to process per run (ignored when --project is set)")
 	runCmd.Flags().Int("max-tasks", 1, "Max tasks to run per project (ignored when --task is set)")
+	runCmd.Flags().Bool("ignore-budget", false, "Bypass budget checks (use with caution)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -51,6 +53,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	taskFilter, _ := cmd.Flags().GetString("task")
 	maxProjects, _ := cmd.Flags().GetInt("max-projects")
 	maxTasks, _ := cmd.Flags().GetInt("max-tasks")
+	ignoreBudget, _ := cmd.Flags().GetBool("ignore-budget")
 
 	// Augment PATH so provider CLIs are discoverable when launched
 	// from launchd/systemd/cron which have a minimal PATH.
@@ -134,16 +137,22 @@ func runRun(cmd *cobra.Command, args []string) error {
 	selector := tasks.NewSelector(cfg, st)
 
 	// Run execution
+	if ignoreBudget {
+		fmt.Println("WARNING: --ignore-budget is set, budget checks will be bypassed")
+		log.Warn("--ignore-budget active, bypassing budget checks")
+	}
+
 	params := executeRunParams{
-		cfg:        cfg,
-		budgetMgr:  budgetMgr,
-		selector:   selector,
-		st:         st,
-		projects:   projects,
-		taskFilter: taskFilter,
-		maxTasks:   maxTasks,
-		dryRun:     dryRun,
-		log:        log,
+		cfg:          cfg,
+		budgetMgr:    budgetMgr,
+		selector:     selector,
+		st:           st,
+		projects:     projects,
+		taskFilter:   taskFilter,
+		maxTasks:     maxTasks,
+		ignoreBudget: ignoreBudget,
+		dryRun:       dryRun,
+		log:          log,
 	}
 	if !dryRun {
 		params.report = newRunReport(time.Now(), calculateRunBudgetStart(cfg, budgetMgr, log))
@@ -152,16 +161,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 }
 
 type executeRunParams struct {
-	cfg        *config.Config
-	budgetMgr  *budget.Manager
-	selector   *tasks.Selector
-	st         *state.State
-	projects   []string
-	taskFilter string
-	maxTasks   int
-	dryRun     bool
-	report     *runReport
-	log        *logging.Logger
+	cfg          *config.Config
+	budgetMgr    *budget.Manager
+	selector     *tasks.Selector
+	st           *state.State
+	projects     []string
+	taskFilter   string
+	maxTasks     int
+	ignoreBudget bool
+	dryRun       bool
+	report       *runReport
+	log          *logging.Logger
 }
 
 // providerChoice holds a selected provider's agent and name.
@@ -173,7 +183,8 @@ type providerChoice struct {
 
 // selectProvider picks the best available provider with budget remaining.
 // Order is determined by providers.preference (default: claude, codex).
-func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.Logger) (*providerChoice, error) {
+// When ignoreBudget is true, budget-exhausted providers are still selected.
+func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.Logger, ignoreBudget bool) (*providerChoice, error) {
 	type candidate struct {
 		name      string
 		binary    string
@@ -220,6 +231,14 @@ func selectProvider(cfg *config.Config, budgetMgr *budget.Manager, log *logging.
 		}
 		if allowance.Allowance <= 0 {
 			log.Infof("provider %s: budget exhausted (%.1f%% used)", c.name, allowance.UsedPercent)
+			if ignoreBudget {
+				log.Warnf("provider %s: ignoring exhausted budget per --ignore-budget", c.name)
+				return &providerChoice{
+					agent:     c.makeAgent(),
+					name:      c.name,
+					allowance: allowance,
+				}, nil
+			}
 			budgetExhausted = append(budgetExhausted, fmt.Sprintf("%s (%.0f%% used)", c.name, allowance.UsedPercent))
 			continue
 		}
@@ -291,7 +310,7 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 		}
 
 		// Select the best available provider with remaining budget
-		choice, err := selectProvider(p.cfg, p.budgetMgr, p.log)
+		choice, err := selectProvider(p.cfg, p.budgetMgr, p.log, p.ignoreBudget)
 		if err != nil {
 			p.log.Infof("no provider available: %v", err)
 			fmt.Printf("No provider available: %v\n", err)
@@ -334,7 +353,11 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 			if n <= 0 {
 				n = 1
 			}
-			selectedTasks = p.selector.SelectTopN(choice.allowance.Allowance, projectPath, n)
+			taskBudget := choice.allowance.Allowance
+			if p.ignoreBudget {
+				taskBudget = math.MaxInt64
+			}
+			selectedTasks = p.selector.SelectTopN(taskBudget, projectPath, n)
 		}
 
 		if len(selectedTasks) == 0 {

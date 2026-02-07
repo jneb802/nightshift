@@ -306,7 +306,7 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 		}
 
 		// Select the best available provider with remaining budget
-		choice, err := selectProvider(cfg, budgetMgr, log)
+		choice, err := selectProvider(cfg, budgetMgr, log, false)
 		if err != nil {
 			log.Infof("no provider available: %v", err)
 			break

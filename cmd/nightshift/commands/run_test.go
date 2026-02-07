@@ -60,7 +60,7 @@ func TestSelectProvider_PreferenceOrder(t *testing.T) {
 	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}}
 	budgetMgr := budget.NewManager(cfg, claude, codex)
 
-	choice, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	choice, err := selectProvider(cfg, budgetMgr, logging.Component("test"), false)
 	if err != nil {
 		t.Fatalf("selectProvider error: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSelectProvider_FallbackOnBudget(t *testing.T) {
 	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 100}}
 	budgetMgr := budget.NewManager(cfg, claude, codex)
 
-	choice, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	choice, err := selectProvider(cfg, budgetMgr, logging.Component("test"), false)
 	if err != nil {
 		t.Fatalf("selectProvider error: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSelectProvider_NoProvidersEnabled(t *testing.T) {
 	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}}
 	budgetMgr := budget.NewManager(cfg, claude, codex)
 
-	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"), false)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -144,7 +144,7 @@ func TestSelectProvider_AllBudgetExhausted(t *testing.T) {
 	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 100}}
 	budgetMgr := budget.NewManager(cfg, claude, codex)
 
-	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"), false)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -172,7 +172,7 @@ func TestSelectProvider_CLINotInPath(t *testing.T) {
 	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}}
 	budgetMgr := budget.NewManager(cfg, claude, codex)
 
-	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"))
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"), false)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -396,4 +396,101 @@ func TestMaxTasks_IgnoredWhenTaskSet(t *testing.T) {
 	}
 	// The test passes if executeRun doesn't error - when taskFilter is set,
 	// it uses GetDefinition + single-task path, ignoring maxTasks entirely.
+}
+
+func TestSelectProvider_IgnoreBudget_StillReturnsProvider(t *testing.T) {
+	tmp := t.TempDir()
+	makeExecutable(t, tmp, "claude")
+	makeExecutable(t, tmp, "codex")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Claude: config.ProviderConfig{Enabled: true},
+			Codex:  config.ProviderConfig{Enabled: true},
+		},
+		Budget: config.BudgetConfig{
+			Mode:         "daily",
+			MaxPercent:   75,
+			WeeklyTokens: 700000,
+		},
+	}
+	// Both providers at 100% usage
+	claude := &mockUsage{name: "claude", pct: 100}
+	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 100}}
+	budgetMgr := budget.NewManager(cfg, claude, codex)
+
+	choice, err := selectProvider(cfg, budgetMgr, logging.Component("test"), true)
+	if err != nil {
+		t.Fatalf("selectProvider with ignoreBudget=true should succeed, got: %v", err)
+	}
+	if choice == nil {
+		t.Fatal("expected a provider choice, got nil")
+	}
+	// Should pick the first preference (claude by default)
+	if choice.name != "claude" {
+		t.Fatalf("provider = %s, want claude (first in default preference)", choice.name)
+	}
+}
+
+func TestSelectProvider_IgnoreBudget_PopulatesAllowance(t *testing.T) {
+	tmp := t.TempDir()
+	makeExecutable(t, tmp, "claude")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Claude: config.ProviderConfig{Enabled: true},
+			Codex:  config.ProviderConfig{Enabled: false},
+		},
+		Budget: config.BudgetConfig{
+			Mode:         "daily",
+			MaxPercent:   75,
+			WeeklyTokens: 700000,
+		},
+	}
+	claude := &mockUsage{name: "claude", pct: 100}
+	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 0}}
+	budgetMgr := budget.NewManager(cfg, claude, codex)
+
+	choice, err := selectProvider(cfg, budgetMgr, logging.Component("test"), true)
+	if err != nil {
+		t.Fatalf("selectProvider error: %v", err)
+	}
+	if choice.allowance == nil {
+		t.Fatal("allowance should be populated even when ignoring budget")
+	}
+	if choice.allowance.UsedPercent != 100 {
+		t.Fatalf("UsedPercent = %.1f, want 100", choice.allowance.UsedPercent)
+	}
+}
+
+func TestSelectProvider_IgnoreBudget_False_StillRejectsBudget(t *testing.T) {
+	tmp := t.TempDir()
+	makeExecutable(t, tmp, "claude")
+	makeExecutable(t, tmp, "codex")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Claude: config.ProviderConfig{Enabled: true},
+			Codex:  config.ProviderConfig{Enabled: true},
+		},
+		Budget: config.BudgetConfig{
+			Mode:         "daily",
+			MaxPercent:   75,
+			WeeklyTokens: 700000,
+		},
+	}
+	claude := &mockUsage{name: "claude", pct: 100}
+	codex := &mockCodexUsage{mockUsage: mockUsage{name: "codex", pct: 100}}
+	budgetMgr := budget.NewManager(cfg, claude, codex)
+
+	_, err := selectProvider(cfg, budgetMgr, logging.Component("test"), false)
+	if err == nil {
+		t.Fatal("expected error with ignoreBudget=false and exhausted budget")
+	}
+	if !strings.Contains(err.Error(), "budget exhausted") {
+		t.Fatalf("error = %q, want it to contain 'budget exhausted'", err.Error())
+	}
 }
