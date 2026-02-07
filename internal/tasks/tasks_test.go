@@ -247,7 +247,7 @@ func TestRegistryCompleteness(t *testing.T) {
 	// All task type constants should be in registry
 	taskTypes := []TaskType{
 		// Category 1
-		TaskLintFix, TaskBugFinder, TaskAutoDRY, TaskAPIContractVerify,
+		TaskLintFix, TaskBugFinder, TaskAutoDRY, TaskSkillGroom, TaskAPIContractVerify,
 		TaskBackwardCompat, TaskBuildOptimize, TaskDocsBackfill,
 		TaskCommitNormalize, TaskChangelogSynth, TaskReleaseNotes, TaskADRDraft,
 		TaskTDReview,
@@ -322,6 +322,10 @@ func TestDisabledByDefault(t *testing.T) {
 	if def.DisabledByDefault {
 		t.Error("TaskLintFix should not be DisabledByDefault")
 	}
+	def, _ = GetDefinition(TaskSkillGroom)
+	if def.DisabledByDefault {
+		t.Error("TaskSkillGroom should not be DisabledByDefault")
+	}
 }
 
 func TestDefaultDisabledTaskTypes(t *testing.T) {
@@ -329,13 +333,13 @@ func TestDefaultDisabledTaskTypes(t *testing.T) {
 	if len(types) == 0 {
 		t.Error("DefaultDisabledTaskTypes() returned empty slice")
 	}
-	found := false
+	foundTDReview := false
 	for _, tt := range types {
 		if tt == TaskTDReview {
-			found = true
+			foundTDReview = true
 		}
 	}
-	if !found {
+	if !foundTDReview {
 		t.Error("DefaultDisabledTaskTypes() should include TaskTDReview")
 	}
 }

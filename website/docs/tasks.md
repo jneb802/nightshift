@@ -56,6 +56,30 @@ nightshift task run lint-fix --provider claude --dry-run
 nightshift task run lint-fix --provider claude
 ```
 
+## Skill Grooming Task
+
+Nightshift includes a built-in `skill-groom` task for keeping project-local skills aligned with the current codebase.
+
+It is enabled by default. You can set its interval and priority:
+
+```yaml
+tasks:
+  priorities:
+    skill-groom: 2
+  intervals:
+    skill-groom: "168h"
+```
+
+To opt out:
+
+```yaml
+tasks:
+  disabled:
+    - skill-groom
+```
+
+`skill-groom` uses `README.md` as project context, checks `.claude/skills` and `.codex/skills`, and validates `SKILL.md` content against the Agent Skills format (starting docs lookup from `https://agentskills.io/llms.txt`).
+
 ## Custom Tasks
 
 Define custom tasks in your config:

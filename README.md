@@ -88,10 +88,12 @@ nightshift task list --cost low --json
 
 # Show task details and planning prompt
 nightshift task show lint-fix
+nightshift task show skill-groom
 nightshift task show lint-fix --prompt-only
 
 # Run a task immediately
 nightshift task run lint-fix --provider claude
+nightshift task run skill-groom --provider codex --dry-run
 nightshift task run lint-fix --provider codex --dry-run
 ```
 
@@ -184,13 +186,17 @@ tasks:
     - bug-finder
   priorities:
     lint-fix: 1
+    skill-groom: 2
     bug-finder: 2
   intervals:
     lint-fix: "24h"
+    skill-groom: "168h"
     docs-backfill: "168h"
 ```
 
 Each task has a default cooldown interval to prevent the same task from running too frequently on a project (e.g., 24h for lint-fix, 7d for docs-backfill). Override per-task with `tasks.intervals`.
+
+`skill-groom` is enabled by default. Add it to `tasks.disabled` if you want to opt out. It updates project-local skills under `.claude/skills` and `.codex/skills` using `README.md` as project context and starts Agent Skills docs lookup from `https://agentskills.io/llms.txt`.
 
 ## License
 

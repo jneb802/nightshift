@@ -131,6 +131,7 @@ const (
 	TaskLintFix              TaskType = "lint-fix"
 	TaskBugFinder            TaskType = "bug-finder"
 	TaskAutoDRY              TaskType = "auto-dry"
+	TaskSkillGroom           TaskType = "skill-groom"
 	TaskAPIContractVerify    TaskType = "api-contract-verify"
 	TaskBackwardCompat       TaskType = "backward-compat"
 	TaskBuildOptimize        TaskType = "build-optimize"
@@ -277,6 +278,19 @@ var registry = map[TaskType]TaskDefinition{
 		CostTier:        CostHigh,
 		RiskLevel:       RiskMedium,
 		DefaultInterval: 168 * time.Hour,
+	},
+	TaskSkillGroom: {
+		Type:     TaskSkillGroom,
+		Category: CategoryPR,
+		Name:     "Skill Grooming",
+		Description: `Audit and update project-local agent skills to match the current codebase.
+Use README.md as the primary project context for commands, architecture, and workflows.
+For Agent Skills documentation lookup, fetch https://agentskills.io/llms.txt first and use it as the index before reading specific spec pages.
+Inspect .claude/skills and .codex/skills for SKILL.md files, validate frontmatter and naming rules against the spec, and fix stale references to files/scripts/paths.
+Apply safe updates directly, and leave concise follow-ups for anything uncertain.`,
+		CostTier:          CostHigh,
+		RiskLevel:         RiskMedium,
+		DefaultInterval:   168 * time.Hour,
 	},
 	TaskAPIContractVerify: {
 		Type:            TaskAPIContractVerify,
