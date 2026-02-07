@@ -40,6 +40,8 @@ func init() {
 	runCmd.Flags().Bool("dry-run", false, "Simulate execution without making changes")
 	runCmd.Flags().StringP("project", "p", "", "Path to project directory")
 	runCmd.Flags().StringP("task", "t", "", "Run specific task by name")
+	runCmd.Flags().Int("max-projects", 1, "Max projects to process per run (ignored when --project is set)")
+	runCmd.Flags().Int("max-tasks", 1, "Max tasks to run per project (ignored when --task is set)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -47,6 +49,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	projectPath, _ := cmd.Flags().GetString("project")
 	taskFilter, _ := cmd.Flags().GetString("task")
+	maxProjects, _ := cmd.Flags().GetInt("max-projects")
+	maxTasks, _ := cmd.Flags().GetInt("max-tasks")
 
 	// Augment PATH so provider CLIs are discoverable when launched
 	// from launchd/systemd/cron which have a minimal PATH.
@@ -110,6 +114,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve projects: %w", err)
 	}
 
+	// Limit projects when --project was not explicitly set
+	if projectPath == "" && maxProjects > 0 && len(projects) > maxProjects {
+		projects = projects[:maxProjects]
+	}
+
 	if len(projects) == 0 {
 		fmt.Println("no projects configured")
 		return nil
@@ -132,6 +141,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		st:         st,
 		projects:   projects,
 		taskFilter: taskFilter,
+		maxTasks:   maxTasks,
 		dryRun:     dryRun,
 		log:        log,
 	}
@@ -148,6 +158,7 @@ type executeRunParams struct {
 	st         *state.State
 	projects   []string
 	taskFilter string
+	maxTasks   int
 	dryRun     bool
 	report     *runReport
 	log        *logging.Logger
@@ -318,10 +329,12 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 				Project:    projectPath,
 			}}
 		} else {
-			// Select the top task that fits budget
-			if task := p.selector.SelectNext(choice.allowance.Allowance, projectPath); task != nil {
-				selectedTasks = []tasks.ScoredTask{*task}
+			// Select top N tasks that fit budget
+			n := p.maxTasks
+			if n <= 0 {
+				n = 1
 			}
+			selectedTasks = p.selector.SelectTopN(choice.allowance.Allowance, projectPath, n)
 		}
 
 		if len(selectedTasks) == 0 {
