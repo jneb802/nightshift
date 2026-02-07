@@ -99,11 +99,45 @@ nightshift task run lint-fix --provider codex --dry-run
 
 If `gum` is available, preview output is shown through the gum pager. Use `--plain` to disable.
 
-Useful flags:
-- `nightshift run --dry-run` to simulate tasks without changes
-- `nightshift run --project <path>` to target a single repo
-- `nightshift run --task <task-type>` to run a specific task
-- `nightshift status --today` to see today’s activity summary
+### `nightshift run`
+
+Before executing, `nightshift run` displays a **preflight summary** showing the
+selected provider, budget status, projects, and planned tasks. In interactive
+terminals you are prompted for confirmation; in non-TTY environments (cron,
+daemon, CI) confirmation is auto-skipped.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | `false` | Show preflight summary and exit without executing |
+| `--project`, `-p` | _(all configured)_ | Target a single project directory |
+| `--task`, `-t` | _(auto-select)_ | Run a specific task by name |
+| `--max-projects` | `1` | Max projects to process (ignored when `--project` is set) |
+| `--max-tasks` | `1` | Max tasks per project (ignored when `--task` is set) |
+| `--ignore-budget` | `false` | Bypass budget checks (use with caution) |
+| `--yes`, `-y` | `false` | Skip the confirmation prompt |
+
+```bash
+# Interactive run with preflight summary + confirmation prompt
+nightshift run
+
+# Non-interactive: skip confirmation
+nightshift run --yes
+
+# Dry-run: show preflight summary and exit
+nightshift run --dry-run
+
+# Process up to 3 projects, 2 tasks each
+nightshift run --max-projects 3 --max-tasks 2
+
+# Bypass budget limits (shows warning)
+nightshift run --ignore-budget
+
+# Target a specific project and task directly
+nightshift run -p ./my-project -t lint-fix
+```
+
+Other useful flags:
+- `nightshift status --today` to see today's activity summary
 - `nightshift daemon start --foreground` for debug
 - `--category` — filter tasks by category (pr, analysis, options, safe, map, emergency)
 - `--cost` — filter by cost tier (low, medium, high, veryhigh)

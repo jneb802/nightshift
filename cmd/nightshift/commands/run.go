@@ -67,8 +67,31 @@ var runCmd = &cobra.Command{
 	Short: "Execute tasks",
 	Long: `Execute configured tasks immediately.
 
-By default, runs all enabled tasks. Use --task to run a specific task.
-Use --dry-run to simulate execution without making changes.`,
+Before executing, nightshift displays a preflight summary showing the
+selected provider, budget status, projects, and tasks. In interactive
+terminals a confirmation prompt is shown; use --yes to skip it. In
+non-TTY environments (cron, daemon, CI) confirmation is auto-skipped.
+
+Use --dry-run to display the preflight summary and exit without
+executing anything.
+
+Flags:
+  --max-projects N   Limit how many projects are processed (default 1).
+                     Ignored when --project is set.
+  --max-tasks N      Limit how many tasks run per project (default 1).
+                     Ignored when --task is set.
+  --ignore-budget    Bypass budget checks (use with caution).
+  --yes / -y         Skip the confirmation prompt.
+  --dry-run          Show preflight summary and exit without executing.
+
+Examples:
+  nightshift run                              # Interactive: preflight + prompt
+  nightshift run --yes                        # Skip confirmation
+  nightshift run --dry-run                    # Preview only, no execution
+  nightshift run --max-projects 3             # Process up to 3 projects
+  nightshift run --max-tasks 3                # Up to 3 tasks per project
+  nightshift run --ignore-budget              # Run even if budget exhausted
+  nightshift run -p ./my-project -t lint-fix  # Specific project + task`,
 	RunE: runRun,
 }
 
