@@ -113,6 +113,7 @@ daemon, CI) confirmation is auto-skipped.
 | `--task`, `-t` | _(auto-select)_ | Run a specific task by name |
 | `--max-projects` | `1` | Max projects to process (ignored when `--project` is set) |
 | `--max-tasks` | `1` | Max tasks per project (ignored when `--task` is set) |
+| `--random-task` | `false` | Pick a random task from eligible tasks instead of the highest-scored one |
 | `--ignore-budget` | `false` | Bypass budget checks (use with caution) |
 | `--yes`, `-y` | `false` | Skip the confirmation prompt |
 
@@ -128,6 +129,9 @@ nightshift run --dry-run
 
 # Process up to 3 projects, 2 tasks each
 nightshift run --max-projects 3 --max-tasks 2
+
+# Pick a random eligible task
+nightshift run --random-task
 
 # Bypass budget limits (shows warning)
 nightshift run --ignore-budget

@@ -30,6 +30,7 @@ nightshift run --yes                    # Skip confirmation
 nightshift run --dry-run                # Show preflight, don't execute
 nightshift run --max-projects 3         # Process up to 3 projects
 nightshift run --max-tasks 2            # Run up to 2 tasks per project
+nightshift run --random-task            # Pick a random eligible task
 nightshift run --ignore-budget          # Bypass budget limits (use with caution)
 nightshift run --project ~/code/myapp   # Target specific project (ignores --max-projects)
 nightshift run --task lint-fix          # Run specific task (ignores --max-tasks)
@@ -41,6 +42,7 @@ nightshift run --task lint-fix          # Run specific task (ignores --max-tasks
 | `--yes`, `-y` | `false` | Skip confirmation prompt |
 | `--max-projects` | `1` | Max projects to process (ignored when `--project` is set) |
 | `--max-tasks` | `1` | Max tasks per project (ignored when `--task` is set) |
+| `--random-task` | `false` | Pick a random task from eligible tasks instead of the highest-scored one |
 | `--ignore-budget` | `false` | Bypass budget checks with a warning |
 | `--project`, `-p` | | Target a specific project directory |
 | `--task`, `-t` | | Run a specific task by name |
