@@ -167,4 +167,4 @@ Slow run time:
 ## Related Docs
 
 - `docs/guides/codex-budget-tracking.md`
-- `docs/user-guide.md` (Budget Calibration section)
+- [Budget docs](https://nightshift.haplab.com/docs/budget) (Calibration section)

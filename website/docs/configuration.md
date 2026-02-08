@@ -86,6 +86,45 @@ tasks:
 
 Each task has a default cooldown interval to prevent the same task from running too frequently on a project.
 
+## Multi-Project Setup
+
+```yaml
+projects:
+  - path: ~/code/project1
+    priority: 1                # Higher priority = processed first
+    tasks:
+      - lint
+      - docs
+  - path: ~/code/project2
+    priority: 2
+
+  # Or use glob patterns
+  - pattern: ~/code/oss/*
+    exclude:
+      - ~/code/oss/archived
+```
+
+## Safe Defaults
+
+| Feature | Default | Override |
+|---------|---------|----------|
+| Read-only first run | Yes | `--enable-writes` |
+| Max budget per run | 75% | `budget.max_percent` |
+| Auto-push to remote | No | Manual only |
+| Reserve budget | 5% | `budget.reserve_percent` |
+
+## File Locations
+
+| Type | Location |
+|------|----------|
+| Run logs | `~/.local/share/nightshift/logs/nightshift-YYYY-MM-DD.log` |
+| Audit logs | `~/.local/share/nightshift/audit/audit-YYYY-MM-DD.jsonl` |
+| Summaries | `~/.local/share/nightshift/summaries/` |
+| Database | `~/.local/share/nightshift/nightshift.db` |
+| PID file | `~/.local/share/nightshift/nightshift.pid` |
+
+If `state/state.json` exists from older versions, Nightshift migrates it to the SQLite database and renames the file to `state.json.migrated`.
+
 ## Providers
 
 Nightshift supports Claude Code and Codex as execution providers. It will use whichever has budget remaining, in the order specified by `preference`.

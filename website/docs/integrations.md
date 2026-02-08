@@ -32,9 +32,17 @@ All output is PR-based. Nightshift creates branches and pull requests for its fi
 
 Nightshift can source tasks from [td](https://td.haplab.com) — task management for AI-assisted development. Tasks tagged with `nightshift` in td will be picked up automatically.
 
+```yaml
+integrations:
+  task_sources:
+    - td:
+        enabled: true
+        teach_agent: true   # Include td usage + core workflow in prompts
+```
+
 ## CLAUDE.md / AGENTS.md
 
-Nightshift reads project-level instruction files to understand context when executing tasks. Place a `CLAUDE.md` or `AGENTS.md` in your repo root to give Nightshift project-specific guidance.
+Nightshift reads project-level instruction files to understand context when executing tasks. Place a `CLAUDE.md` or `AGENTS.md` in your repo root to give Nightshift project-specific guidance. Tasks mentioned in these files get a priority bonus (+2).
 
 ## GitHub Issues
 

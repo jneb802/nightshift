@@ -232,6 +232,19 @@ Each task has a default cooldown interval to prevent the same task from running 
 
 `skill-groom` is enabled by default. Add it to `tasks.disabled` if you want to opt out. It updates project-local skills under `.claude/skills` and `.codex/skills` using `README.md` as project context and starts Agent Skills docs lookup from `https://agentskills.io/llms.txt`.
 
+## Uninstalling
+
+```bash
+# Remove the system service
+nightshift uninstall
+
+# Remove configs and data (optional)
+rm -rf ~/.config/nightshift ~/.local/share/nightshift
+
+# Remove the binary
+rm "$(which nightshift)"
+```
+
 ## License
 
 MIT - see [LICENSE](LICENSE) for details.

@@ -87,13 +87,53 @@ Define custom tasks in your config:
 ```yaml
 tasks:
   custom:
-    - name: check-migrations
-      category: analysis
-      cost: low
-      prompt: "Review all database migrations for potential issues..."
-      interval: "168h"
+    - type: pr-review
+      name: "PR Review Session"
+      description: |
+        Review all open PRs. Fix obvious issues immediately.
+        Create tasks for bigger problems.
+      category: pr
+      cost_tier: high
+      risk_level: medium
+      interval: "72h"
 ```
+
+Custom tasks use the same scoring, cooldowns, and budget controls as built-in tasks. The `description` field becomes the agent prompt. Only `type`, `name`, and `description` are required — other fields have sensible defaults.
 
 ## Task Cooldowns
 
 Each task has a default cooldown per project. After running `lint-fix` on `~/code/sidecar`, it won't run again on that project for 24 hours. Override with `tasks.intervals` in config.
+
+Category defaults:
+
+| Category | Default Interval |
+|----------|-----------------:|
+| PR | 7 days |
+| Analysis | 3 days |
+| Options | 7 days |
+| Safe | 14 days |
+| Map | 7 days |
+| Emergency | 30 days |
+
+Use `nightshift preview --explain` to see cooldown status, including which tasks are currently on cooldown and when they become eligible again. When all tasks for a project are on cooldown, the run is skipped.
+
+## td Review Task
+
+The `td-review` task runs a detailed review session over open td reviews. It:
+
+- Reviews all open review tasks in the project
+- Fixes obvious bugs immediately and creates td bug tasks for them
+- Creates new td tasks with detailed descriptions for bigger issues
+- Verifies changes have tests, creates tasks for missing coverage
+- Uses subagents for reviews that can run in parallel
+- Closes in-progress tasks once related bugs are resolved
+
+This task is **disabled by default** and must be explicitly opted in:
+
+```yaml
+tasks:
+  enabled:
+    - td-review
+```
+
+Requires the td integration to be enabled (see [Integrations](/docs/integrations)).
