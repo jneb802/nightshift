@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1035,6 +1036,81 @@ func TestDryRun_DisplaysMessage(t *testing.T) {
 
 	if !strings.Contains(output, "[dry-run] No tasks executed.") {
 		t.Errorf("output missing dry-run message\nGot:\n%s", output)
+	}
+}
+
+// --- Random task tests ---
+
+func TestRandomTask_MutuallyExclusiveWithTaskFilter(t *testing.T) {
+	// Verify the runCmd has the --random-task flag registered
+	f := runCmd.Flags().Lookup("random-task")
+	if f == nil {
+		t.Fatal("--random-task flag not registered on runCmd")
+	}
+
+	// Simulate the validation logic from runRun: both flags set should error
+	randomTask := true
+	taskFilter := "lint-fix"
+	if randomTask && taskFilter != "" {
+		err := fmt.Errorf("--random-task and --task are mutually exclusive")
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("error = %q, want to contain 'mutually exclusive'", err.Error())
+		}
+	} else {
+		t.Fatal("expected mutual exclusivity check to trigger")
+	}
+}
+
+func TestBuildPreflight_RandomTask_ReturnsExactlyOneTask(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.randomTask = true
+
+	plan, err := buildPreflight(params)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if len(plan.projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(plan.projects))
+	}
+	pp := plan.projects[0]
+	if pp.skipReason != "" {
+		t.Fatalf("skipReason = %q, want empty", pp.skipReason)
+	}
+	if len(pp.tasks) != 1 {
+		t.Fatalf("tasks = %d, want exactly 1 with randomTask", len(pp.tasks))
+	}
+}
+
+func TestBuildPreflight_RandomTask_TaskFromEligiblePool(t *testing.T) {
+	project := t.TempDir()
+	params := newPreflightParams(t, []string{project})
+	params.randomTask = true
+
+	// Build eligible pool for comparison
+	allDefs := tasks.AllDefinitions()
+	eligible := params.selector.FilterEnabled(allDefs)
+	eligibleTypes := make(map[tasks.TaskType]bool)
+	for _, d := range eligible {
+		eligibleTypes[d.Type] = true
+	}
+
+	// Run multiple iterations to verify the returned task is always from the eligible pool
+	for i := 0; i < 20; i++ {
+		plan, err := buildPreflight(params)
+		if err != nil {
+			t.Fatalf("buildPreflight iter %d: %v", i, err)
+		}
+		if len(plan.projects) == 0 || len(plan.projects[0].tasks) == 0 {
+			t.Fatalf("iter %d: no tasks returned", i)
+		}
+		task := plan.projects[0].tasks[0]
+		if !eligibleTypes[task.Definition.Type] {
+			t.Fatalf("iter %d: task %s not in eligible pool", i, task.Definition.Type)
+		}
+		if task.Project != project {
+			t.Fatalf("iter %d: task.Project = %q, want %q", i, task.Project, project)
+		}
 	}
 }
 

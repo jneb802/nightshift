@@ -80,6 +80,8 @@ Flags:
                      Ignored when --project is set.
   --max-tasks N      Limit how many tasks run per project (default 1).
                      Ignored when --task is set.
+  --random-task      Pick a random task from eligible tasks (exactly 1).
+                     Mutually exclusive with --task.
   --ignore-budget    Bypass budget checks (use with caution).
   --yes / -y         Skip the confirmation prompt.
   --dry-run          Show preflight summary and exit without executing.
@@ -90,6 +92,7 @@ Examples:
   nightshift run --dry-run                    # Preview only, no execution
   nightshift run --max-projects 3             # Process up to 3 projects
   nightshift run --max-tasks 3                # Up to 3 tasks per project
+  nightshift run --random-task                # Pick a random eligible task
   nightshift run --ignore-budget              # Run even if budget exhausted
   nightshift run -p ./my-project -t lint-fix  # Specific project + task`,
 	RunE: runRun,
@@ -103,6 +106,7 @@ func init() {
 	runCmd.Flags().Int("max-tasks", 1, "Max tasks to run per project (ignored when --task is set)")
 	runCmd.Flags().Bool("ignore-budget", false, "Bypass budget checks (use with caution)")
 	runCmd.Flags().BoolP("yes", "y", false, "Skip confirmation prompt")
+	runCmd.Flags().Bool("random-task", false, "Pick a random task from eligible tasks")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -114,6 +118,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 	maxTasks, _ := cmd.Flags().GetInt("max-tasks")
 	ignoreBudget, _ := cmd.Flags().GetBool("ignore-budget")
 	yes, _ := cmd.Flags().GetBool("yes")
+	randomTask, _ := cmd.Flags().GetBool("random-task")
+
+	if randomTask && taskFilter != "" {
+		return fmt.Errorf("--random-task and --task are mutually exclusive")
+	}
 
 	// Augment PATH so provider CLIs are discoverable when launched
 	// from launchd/systemd/cron which have a minimal PATH.
@@ -210,6 +219,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		projects:     projects,
 		taskFilter:   taskFilter,
 		maxTasks:     maxTasks,
+		randomTask:   randomTask,
 		ignoreBudget: ignoreBudget,
 		dryRun:       dryRun,
 		yes:          yes,
@@ -229,6 +239,7 @@ type executeRunParams struct {
 	projects     []string
 	taskFilter   string
 	maxTasks     int
+	randomTask   bool
 	ignoreBudget bool
 	dryRun       bool
 	yes          bool
@@ -405,6 +416,14 @@ func buildPreflight(p executeRunParams) (*preflightPlan, error) {
 				Score:      p.selector.ScoreTask(def.Type, projectPath),
 				Project:    projectPath,
 			}}
+		} else if p.randomTask {
+			taskBudget := choice.allowance.Allowance
+			if p.ignoreBudget {
+				taskBudget = math.MaxInt64
+			}
+			if picked := p.selector.SelectRandom(taskBudget, projectPath); picked != nil {
+				selectedTasks = []tasks.ScoredTask{*picked}
+			}
 		} else {
 			n := p.maxTasks
 			if n <= 0 {
