@@ -20,6 +20,33 @@ title: CLI Reference
 | `nightshift stats` | Token usage statistics |
 | `nightshift daemon` | Background scheduler |
 
+## Run Options
+
+`nightshift run` shows a preflight summary before executing, then prompts for confirmation in interactive terminals.
+
+```bash
+nightshift run                          # Preflight + confirm + execute (1 project, 1 task)
+nightshift run --yes                    # Skip confirmation
+nightshift run --dry-run                # Show preflight, don't execute
+nightshift run --max-projects 3         # Process up to 3 projects
+nightshift run --max-tasks 2            # Run up to 2 tasks per project
+nightshift run --ignore-budget          # Bypass budget limits (use with caution)
+nightshift run --project ~/code/myapp   # Target specific project (ignores --max-projects)
+nightshift run --task lint-fix          # Run specific task (ignores --max-tasks)
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | `false` | Show preflight summary and exit without executing |
+| `--yes`, `-y` | `false` | Skip confirmation prompt |
+| `--max-projects` | `1` | Max projects to process (ignored when `--project` is set) |
+| `--max-tasks` | `1` | Max tasks per project (ignored when `--task` is set) |
+| `--ignore-budget` | `false` | Bypass budget checks with a warning |
+| `--project`, `-p` | | Target a specific project directory |
+| `--task`, `-t` | | Run a specific task by name |
+
+Non-interactive contexts (daemon, cron, piped output) skip the confirmation prompt automatically.
+
 ## Preview Options
 
 ```bash
@@ -59,8 +86,5 @@ nightshift budget calibrate
 | Flag | Description |
 |------|-------------|
 | `--verbose` | Verbose output |
-| `--dry-run` | Simulate without changes |
 | `--provider` | Select provider (claude, codex) |
-| `--project` | Target specific project |
-| `--task` | Run specific task type |
 | `--timeout` | Execution timeout (default 30m) |

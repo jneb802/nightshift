@@ -44,8 +44,13 @@ nightshift install cron
 Skip the scheduler and run immediately:
 
 ```bash
-nightshift run
-nightshift run --dry-run
+nightshift run                          # Preflight summary + confirm + execute
+nightshift run --dry-run                # Show preflight summary, don't execute
+nightshift run --yes                    # Skip confirmation prompt
 nightshift run --project ~/code/myproject
 nightshift run --task lint-fix
+nightshift run --max-projects 3 --max-tasks 2  # Process more projects/tasks
+nightshift run --ignore-budget          # Bypass budget limits
 ```
+
+In interactive terminals, `nightshift run` shows a preflight summary and asks for confirmation before executing. Use `--yes` to skip the prompt (e.g., in scripts). Non-TTY contexts auto-skip confirmation.

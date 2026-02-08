@@ -38,10 +38,11 @@ Execute tasks manually (or let the scheduler handle it):
 nightshift run
 ```
 
-Use `--dry-run` to simulate without making changes:
+You'll see a preflight summary showing what will run, then a confirmation prompt. Use `--dry-run` to preview without executing, or `--yes` to skip the prompt:
 
 ```bash
-nightshift run --dry-run
+nightshift run --dry-run    # Preview only
+nightshift run --yes        # Skip confirmation
 ```
 
 ## 5. Check Results
