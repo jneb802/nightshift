@@ -315,13 +315,15 @@ func parseClaudeResetTimes(output string) (sessionReset, weeklyReset string) {
 // parseCodexResetTimes extracts session (5h) and weekly reset times from Codex /status output.
 // Codex shows:
 //
-//	5h limit:     [...] 71% left (resets 20:15)
-//	Weekly limit: [...] 77% left (resets 20:08 on 9 Feb)
+//	5h limit:     [...] 100% left (resets 02:50 on 8 Feb)
+//	Weekly limit: [...] 13% left (resets 20:08 on 9 Feb)
+//
+// Older format omitted the date on the 5h line: (resets 20:15)
 func parseCodexResetTimes(output string) (sessionReset, weeklyReset string) {
 	output = StripANSI(output)
 
-	// Session (5h) reset: "(resets HH:MM)" without "on" date
-	sessionRe := regexp.MustCompile(`(?i)5h\s+limit[^\n]*\(resets\s+(\d{1,2}:\d{2})\)`)
+	// Session (5h) reset: "(resets HH:MM)" or "(resets HH:MM on D Mon)"
+	sessionRe := regexp.MustCompile(`(?i)5h\s+limit[^\n]*\(resets\s+(\d{1,2}:\d{2}(?:\s+on\s+\d{1,2}\s+\w+)?)\)`)
 	if m := sessionRe.FindStringSubmatch(output); len(m) == 2 {
 		sessionReset = m[1]
 	}
@@ -330,6 +332,21 @@ func parseCodexResetTimes(output string) (sessionReset, weeklyReset string) {
 	weeklyRe := regexp.MustCompile(`(?i)weekly\s+limit[^\n]*\(resets\s+(\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+)\)`)
 	if m := weeklyRe.FindStringSubmatch(output); len(m) == 2 {
 		weeklyReset = m[1]
+	}
+
+	// Fallback: if primary weekly regex didn't match, find the last "(resets HH:MM on D Mon)"
+	// in the output. The weekly line is always shown last in Codex /status.
+	// Only use the fallback when we find a match distinct from the session reset
+	// (avoids misidentifying the 5h line as weekly when it's the only line).
+	if weeklyReset == "" {
+		fallbackRe := regexp.MustCompile(`\(resets\s+(\d{1,2}:\d{2}\s+on\s+\d{1,2}\s+\w+)\)`)
+		matches := fallbackRe.FindAllStringSubmatch(output, -1)
+		if len(matches) > 0 {
+			candidate := matches[len(matches)-1][1]
+			if candidate != sessionReset {
+				weeklyReset = candidate
+			}
+		}
 	}
 
 	return sessionReset, weeklyReset

@@ -336,6 +336,31 @@ Weekly limit: 23% used (resets 01:18 on 5 Feb)
 			wantSession: "",
 			wantWeekly:  "01:18 on 5 Feb",
 		},
+		{
+			name: "new format with date on 5h line",
+			output: `
+  5h limit:             [████████████████████] 100% left (resets 02:50 on 8 Feb)
+  Weekly limit:         [███░░░░░░░░░░░░░░░░░] 13% left (resets 20:08 on 9 Feb)
+`,
+			wantSession: "02:50 on 8 Feb",
+			wantWeekly:  "20:08 on 9 Feb",
+		},
+		{
+			name: "new format session only",
+			output: `
+  5h limit:             [████████████████████] 100% left (resets 02:50 on 8 Feb)
+`,
+			wantSession: "02:50 on 8 Feb",
+			wantWeekly:  "",
+		},
+		{
+			name: "fallback weekly when prefix differs",
+			output: `some header
+(resets 14:30 on 3 Mar)
+`,
+			wantSession: "",
+			wantWeekly:  "14:30 on 3 Mar",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
