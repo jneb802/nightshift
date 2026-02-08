@@ -490,27 +490,56 @@ func (s *Stats) computeProviderBudgetProjection(sqlDB *sql.DB, provider string, 
 		}
 	}
 
-	// Average each day's max local_daily over the last 7 days to avoid duplicate
-	// same-day snapshots biasing the average.
-	cutoff := now.AddDate(0, 0, -7)
-	row = sqlDB.QueryRow(
-		`SELECT AVG(day_max)
-		 FROM (
-		   SELECT DATE(timestamp) AS day, MAX(local_daily) AS day_max
-		   FROM snapshots
-		   WHERE provider = ? AND timestamp >= ? AND local_daily > 0
-		   GROUP BY DATE(timestamp)
-		 )`,
-		provider,
-		cutoff,
-	)
+	// Average each day's max local_daily, preferring the current billing week
+	// to avoid spanning week boundaries. Falls back to rolling 7-day window
+	// when the current week has fewer than 2 days of data.
 	var avgDaily sql.NullFloat64
-	if err := row.Scan(&avgDaily); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("stats: avg daily usage for %s: %v", provider, err)
+	useWeekWindow := false
+
+	if weekStart, ok := parseDBTimestamp(weekStartRaw); ok {
+		var dayCount int
+		// Format as ISO string for consistent SQLite text comparison.
+		weekStartStr := weekStart.Format(time.RFC3339)
+		row = sqlDB.QueryRow(
+			`SELECT AVG(day_max), COUNT(*) FROM (
+			   SELECT SUBSTR(timestamp, 1, 10) AS day, MAX(local_daily) AS day_max
+			   FROM snapshots
+			   WHERE provider = ? AND timestamp >= ? AND local_daily > 0
+			   GROUP BY SUBSTR(timestamp, 1, 10)
+			 )`,
+			provider,
+			weekStartStr,
+		)
+		if err := row.Scan(&avgDaily, &dayCount); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("stats: week avg daily for %s: %v", provider, err)
 		}
-		return BudgetProjection{}, false
+		if avgDaily.Valid && avgDaily.Float64 > 0 && dayCount >= 2 {
+			useWeekWindow = true
+		}
 	}
+
+	if !useWeekWindow {
+		cutoff := now.AddDate(0, 0, -7)
+		row = sqlDB.QueryRow(
+			`SELECT AVG(day_max)
+			 FROM (
+			   SELECT SUBSTR(timestamp, 1, 10) AS day, MAX(local_daily) AS day_max
+			   FROM snapshots
+			   WHERE provider = ? AND timestamp >= ? AND local_daily > 0
+			   GROUP BY SUBSTR(timestamp, 1, 10)
+			 )`,
+			provider,
+			cutoff,
+		)
+		avgDaily = sql.NullFloat64{}
+		if err := row.Scan(&avgDaily); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				log.Printf("stats: avg daily usage for %s: %v", provider, err)
+			}
+			return BudgetProjection{}, false
+		}
+	}
+
 	if !avgDaily.Valid || avgDaily.Float64 <= 0 {
 		return BudgetProjection{}, false
 	}
