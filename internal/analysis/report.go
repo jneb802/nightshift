@@ -127,7 +127,14 @@ func (rg *ReportGenerator) RenderMarkdown(report *Report) string {
 	if len(report.Recommendations) > 0 {
 		buf.WriteString("## Recommendations\n\n")
 		for _, rec := range report.Recommendations {
-			if len(rec) > 0 && (rec[0:4] == "GOOD" || rec[0:4] == "HIGH" || rec[0:4] == "CRIT" || rec[0:4] == "MEDI") {
+			// Check if this is a priority item (starts with risk level keywords)
+			isHighPriority := len(rec) > 0 && (
+				bytes.HasPrefix([]byte(rec), []byte("GOOD")) ||
+				bytes.HasPrefix([]byte(rec), []byte("HIGH")) ||
+				bytes.HasPrefix([]byte(rec), []byte("CRITICAL")) ||
+				bytes.HasPrefix([]byte(rec), []byte("MEDIUM")))
+
+			if isHighPriority {
 				// High priority items
 				fmt.Fprintf(&buf, "**%s**\n\n", rec)
 			} else {
