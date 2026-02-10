@@ -246,10 +246,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("providers.preference", []string{"claude", "codex"})
 	v.SetDefault("providers.claude.enabled", true)
 	v.SetDefault("providers.claude.data_path", DefaultClaudeDataPath)
-	v.SetDefault("providers.claude.dangerously_skip_permissions", true)
+	// SECURITY: Default to false to require explicit opt-in for permission bypassing
+	v.SetDefault("providers.claude.dangerously_skip_permissions", false)
 	v.SetDefault("providers.codex.enabled", true)
 	v.SetDefault("providers.codex.data_path", DefaultCodexDataPath)
-	v.SetDefault("providers.codex.dangerously_bypass_approvals_and_sandbox", true)
+	// SECURITY: Default to false to require explicit opt-in for bypassing approvals/sandbox
+	v.SetDefault("providers.codex.dangerously_bypass_approvals_and_sandbox", false)
 
 	// Logging defaults
 	v.SetDefault("logging.level", DefaultLogLevel)

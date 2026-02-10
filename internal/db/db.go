@@ -30,7 +30,8 @@ func Open(dbPath string) (*DB, error) {
 	}
 
 	resolved := expandPath(dbPath)
-	if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil {
+	// SECURITY: Use 0700 (rwx------) for database directory to restrict access to owner only
+	if err := os.MkdirAll(filepath.Dir(resolved), 0700); err != nil {
 		return nil, fmt.Errorf("creating db dir: %w", err)
 	}
 
