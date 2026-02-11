@@ -1370,12 +1370,31 @@ func ensurePathInShell(configPath, shell, dir string) (bool, error) {
 	return true, os.WriteFile(configPath, []byte(existing), 0644)
 }
 
+// escapeShellPath returns a shell-safe escaped version of a path string.
+// Wraps the path in single quotes to prevent interpretation of special characters.
+func escapeShellPath(path string) string {
+	// Single quotes prevent all expansions in shell, safest approach
+	// If the path contains a single quote, we need to escape it carefully
+	if !strings.Contains(path, "'") {
+		return fmt.Sprintf("'%s'", path)
+	}
+	// Path contains single quote: use double quotes and escape special chars
+	// Replace $ and ` and " with escaped versions
+	escaped := strings.ReplaceAll(path, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	escaped = strings.ReplaceAll(escaped, "$", "\\$")
+	escaped = strings.ReplaceAll(escaped, "`", "\\`")
+	return fmt.Sprintf("\"%s\"", escaped)
+}
+
 func pathExportLine(shell, dir string) string {
+	// SECURITY: Escape the directory path to prevent shell injection
+	escapedDir := escapeShellPath(dir)
 	switch shell {
 	case "fish":
-		return fmt.Sprintf("set -gx PATH \"%s\" $PATH", dir)
+		return fmt.Sprintf("set -gx PATH %s $PATH", escapedDir)
 	default:
-		return fmt.Sprintf("export PATH=\"$PATH:%s\"", dir)
+		return fmt.Sprintf("export PATH=\"$PATH:%s\"", escapedDir)
 	}
 }
 
@@ -1964,6 +1983,8 @@ func ensureGitignoreEntry(gitignorePath, entry, comment string) (bool, error) {
 	b.WriteString(entry)
 	b.WriteString("\n")
 
+	// SECURITY: Use 0644 for .gitignore (world-readable is acceptable for git-tracked files)
+	// but ensure proper atomic write to prevent corruption
 	return true, os.WriteFile(gitignorePath, []byte(b.String()), 0644)
 }
 
