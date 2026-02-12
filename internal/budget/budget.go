@@ -29,6 +29,12 @@ type CodexUsageProvider interface {
 	GetResetTime(mode string) (time.Time, error)
 }
 
+// GeminiUsageProvider extends UsageProvider for Gemini-specific usage methods.
+type GeminiUsageProvider interface {
+	UsageProvider
+	GetUsedPercent(mode string, weeklyBudget int64) (float64, error)
+}
+
 // BudgetEstimate provides a resolved weekly budget with metadata.
 type BudgetEstimate struct {
 	WeeklyTokens int64
@@ -62,17 +68,19 @@ type Manager struct {
 	cfg          *config.Config
 	claude       ClaudeUsageProvider
 	codex        CodexUsageProvider
+	gemini       GeminiUsageProvider
 	budgetSource BudgetSource
 	trend        TrendAnalyzer
 	nowFunc      func() time.Time // for testing
 }
 
 // NewManager creates a budget manager with the given configuration and providers.
-func NewManager(cfg *config.Config, claude ClaudeUsageProvider, codex CodexUsageProvider, opts ...Option) *Manager {
+func NewManager(cfg *config.Config, claude ClaudeUsageProvider, codex CodexUsageProvider, gemini GeminiUsageProvider, opts ...Option) *Manager {
 	mgr := &Manager{
 		cfg:     cfg,
 		claude:  claude,
 		codex:   codex,
+		gemini:  gemini,
 		nowFunc: time.Now,
 	}
 	for _, opt := range opts {
@@ -297,6 +305,12 @@ func (m *Manager) GetUsedPercent(provider string) (float64, error) {
 		}
 		return m.codex.GetUsedPercent(mode, weeklyBudget)
 
+	case "gemini":
+		if m.gemini == nil {
+			return 0, fmt.Errorf("gemini provider not configured")
+		}
+		return m.gemini.GetUsedPercent(mode, weeklyBudget)
+
 	default:
 		return 0, fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -310,6 +324,10 @@ func (m *Manager) usedPercentSource(provider string) string {
 		}
 	case "codex":
 		if reporter, ok := m.codex.(UsedPercentSourceProvider); ok {
+			return reporter.LastUsedPercentSource()
+		}
+	case "gemini":
+		if reporter, ok := m.gemini.(UsedPercentSourceProvider); ok {
 			return reporter.LastUsedPercentSource()
 		}
 	}
@@ -350,6 +368,14 @@ func (m *Manager) DaysUntilWeeklyReset(provider string) (int, error) {
 			return 1, nil // At least 1 day
 		}
 		return days, nil
+
+	case "gemini":
+		// Gemini resets weekly; assume Sunday reset (same as Claude)
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			return 7, nil
+		}
+		return 7 - weekday, nil
 
 	default:
 		return 7, nil // Default for unknown providers
@@ -423,9 +449,10 @@ func (t *Tracker) Remaining() int64 {
 }
 
 // NewManagerFromProviders is a convenience constructor that accepts the concrete provider types.
-func NewManagerFromProviders(cfg *config.Config, claude *providers.Claude, codex *providers.Codex, opts ...Option) *Manager {
+func NewManagerFromProviders(cfg *config.Config, claude *providers.Claude, codex *providers.Codex, gemini *providers.Gemini, opts ...Option) *Manager {
 	var claudeProvider ClaudeUsageProvider
 	var codexProvider CodexUsageProvider
+	var geminiProvider GeminiUsageProvider
 
 	if claude != nil {
 		claudeProvider = claude
@@ -433,6 +460,9 @@ func NewManagerFromProviders(cfg *config.Config, claude *providers.Claude, codex
 	if codex != nil {
 		codexProvider = codex
 	}
+	if gemini != nil {
+		geminiProvider = gemini
+	}
 
-	return NewManager(cfg, claudeProvider, codexProvider, opts...)
+	return NewManager(cfg, claudeProvider, codexProvider, geminiProvider, opts...)
 }

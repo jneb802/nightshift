@@ -1661,6 +1661,7 @@ func runSnapshot(cfg *config.Config) (string, error) {
 		database,
 		providers.NewClaudeWithPath(cfg.ExpandedProviderPath("claude")),
 		providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex")),
+		providers.NewGeminiWithPath(cfg.ExpandedProviderPath("gemini")),
 		scraper,
 		weekStartDayFromConfig(cfg),
 	)
@@ -1679,6 +1680,14 @@ func runSnapshot(cfg *config.Config) (string, error) {
 		snapshot, err := collector.TakeSnapshot(ctx, "codex")
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("codex: error: %v", err))
+		} else {
+			lines = append(lines, formatSnapshotLine(snapshot))
+		}
+	}
+	if cfg.Providers.Gemini.Enabled {
+		snapshot, err := collector.TakeSnapshot(ctx, "gemini")
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("gemini: error: %v", err))
 		} else {
 			lines = append(lines, formatSnapshotLine(snapshot))
 		}

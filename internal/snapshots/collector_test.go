@@ -57,6 +57,15 @@ func (f fakeCodex) ListSessionFiles() ([]string, error) { return f.files, f.err 
 func (f fakeCodex) GetTodayTokens() (int64, error)      { return f.dailyTokens, f.err }
 func (f fakeCodex) GetWeeklyTokens() (int64, error)     { return f.weeklyTokens, f.err }
 
+type fakeGemini struct {
+	dailyTokens  int64
+	weeklyTokens int64
+	err          error
+}
+
+func (f fakeGemini) GetTodayTokens() (int64, error)  { return f.dailyTokens, f.err }
+func (f fakeGemini) GetWeeklyTokens() (int64, error) { return f.weeklyTokens, f.err }
+
 func TestTakeSnapshotInsertsClaude(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -68,7 +77,7 @@ func TestTakeSnapshotInsertsClaude(t *testing.T) {
 	}
 	defer func() { _ = database.Close() }()
 
-	collector := NewCollector(database, fakeClaude{weekly: 700, daily: 120}, nil, fakeScraper{claudePct: 50}, time.Monday)
+	collector := NewCollector(database, fakeClaude{weekly: 700, daily: 120}, nil, nil, fakeScraper{claudePct: 50}, time.Monday)
 
 	_, err = collector.TakeSnapshot(context.Background(), "claude")
 	if err != nil {
@@ -115,7 +124,7 @@ func TestTakeSnapshotCodexWithTokenData(t *testing.T) {
 	defer func() { _ = database.Close() }()
 
 	codex := fakeCodex{weeklyTokens: 35000, dailyTokens: 5000}
-	collector := NewCollector(database, nil, codex, fakeScraper{codexPct: 42}, time.Monday)
+	collector := NewCollector(database, nil, codex, nil, fakeScraper{codexPct: 42}, time.Monday)
 
 	snap, err := collector.TakeSnapshot(context.Background(), "codex")
 	if err != nil {
@@ -151,7 +160,7 @@ func TestTakeSnapshotCodexNoTokenData(t *testing.T) {
 	}
 	defer func() { _ = database.Close() }()
 
-	collector := NewCollector(database, nil, fakeCodex{}, fakeScraper{codexPct: 42}, time.Monday)
+	collector := NewCollector(database, nil, fakeCodex{}, nil, fakeScraper{codexPct: 42}, time.Monday)
 
 	snap, err := collector.TakeSnapshot(context.Background(), "codex")
 	if err != nil {
@@ -167,6 +176,82 @@ func TestTakeSnapshotCodexNoTokenData(t *testing.T) {
 	// No local tokens, so inferred budget must be nil
 	if snap.InferredBudget != nil {
 		t.Fatalf("inferred budget = %v, want nil", snap.InferredBudget)
+	}
+}
+
+func TestTakeSnapshotGeminiWithTokenData(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	gemini := fakeGemini{weeklyTokens: 20000, dailyTokens: 3000}
+	collector := NewCollector(database, nil, nil, gemini, nil, time.Monday)
+
+	snap, err := collector.TakeSnapshot(context.Background(), "gemini")
+	if err != nil {
+		t.Fatalf("take snapshot: %v", err)
+	}
+
+	if snap.LocalTokens != 20000 {
+		t.Fatalf("local tokens = %d, want 20000", snap.LocalTokens)
+	}
+	if snap.LocalDaily != 3000 {
+		t.Fatalf("local daily = %d, want 3000", snap.LocalDaily)
+	}
+	if snap.Provider != "gemini" {
+		t.Fatalf("provider = %q, want %q", snap.Provider, "gemini")
+	}
+	// No scraper for gemini, so scraped pct should be nil
+	if snap.ScrapedPct != nil {
+		t.Fatalf("scraped pct = %v, want nil", snap.ScrapedPct)
+	}
+}
+
+func TestTakeSnapshotGeminiNilProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dbPath := filepath.Join(home, "nightshift.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	collector := NewCollector(database, nil, nil, nil, nil, time.Monday)
+
+	_, err = collector.TakeSnapshot(context.Background(), "gemini")
+	if err == nil {
+		t.Fatal("expected error for nil gemini provider")
+	}
+}
+
+func TestGeminiTokenTotals(t *testing.T) {
+	weekly, daily, err := geminiTokenTotals(fakeGemini{
+		weeklyTokens: 25000,
+		dailyTokens:  4000,
+	})
+	if err != nil {
+		t.Fatalf("geminiTokenTotals: %v", err)
+	}
+	if weekly != 25000 {
+		t.Fatalf("weekly tokens = %d, want 25000", weekly)
+	}
+	if daily != 4000 {
+		t.Fatalf("daily tokens = %d, want 4000", daily)
+	}
+}
+
+func TestGeminiTokenTotalsPropagatesErrors(t *testing.T) {
+	_, _, err := geminiTokenTotals(fakeGemini{err: context.DeadlineExceeded})
+	if err == nil {
+		t.Fatal("expected error from geminiTokenTotals")
 	}
 }
 
@@ -223,7 +308,7 @@ func TestTakeSnapshotStoresResetTimes(t *testing.T) {
 		sessionResetTime: "9pm (America/Los_Angeles)",
 		weeklyResetTime:  "Feb 8 at 10am (America/Los_Angeles)",
 	}
-	collector := NewCollector(database, fakeClaude{weekly: 700, daily: 120}, nil, scraper, time.Monday)
+	collector := NewCollector(database, fakeClaude{weekly: 700, daily: 120}, nil, nil, scraper, time.Monday)
 
 	_, err = collector.TakeSnapshot(context.Background(), "claude")
 	if err != nil {
@@ -263,7 +348,7 @@ func TestTakeSnapshotCodexResetTimes(t *testing.T) {
 		sessionResetTime: "20:15",
 		weeklyResetTime:  "20:08 on 9 Feb",
 	}
-	collector := NewCollector(database, nil, fakeCodex{}, scraper, time.Monday)
+	collector := NewCollector(database, nil, fakeCodex{}, nil, scraper, time.Monday)
 
 	snap, err := collector.TakeSnapshot(context.Background(), "codex")
 	if err != nil {
@@ -290,7 +375,7 @@ func TestTakeSnapshotEmptyResetTimes(t *testing.T) {
 	defer func() { _ = database.Close() }()
 
 	// scraper with no reset times
-	collector := NewCollector(database, fakeClaude{weekly: 100, daily: 10}, nil, fakeScraper{claudePct: 25}, time.Monday)
+	collector := NewCollector(database, fakeClaude{weekly: 100, daily: 10}, nil, nil, fakeScraper{claudePct: 25}, time.Monday)
 
 	_, err = collector.TakeSnapshot(context.Background(), "claude")
 	if err != nil {
@@ -322,7 +407,7 @@ func TestPruneSnapshots(t *testing.T) {
 	}
 	defer func() { _ = database.Close() }()
 
-	collector := NewCollector(database, fakeClaude{}, nil, nil, time.Monday)
+	collector := NewCollector(database, fakeClaude{}, nil, nil, nil, time.Monday)
 
 	oldTime := time.Now().AddDate(0, 0, -3)
 	weekStart := startOfWeek(oldTime, time.Monday)

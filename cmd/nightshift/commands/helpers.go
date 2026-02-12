@@ -24,8 +24,14 @@ func agentByName(cfg *config.Config, provider string) (agents.Agent, error) {
 			return nil, fmt.Errorf("codex CLI not found in PATH")
 		}
 		return a, nil
+	case "gemini":
+		a := newGeminiAgentFromConfig(cfg)
+		if !a.Available() {
+			return nil, fmt.Errorf("gemini CLI not found in PATH")
+		}
+		return a, nil
 	default:
-		return nil, fmt.Errorf("unknown provider: %s (supported: claude, codex)", provider)
+		return nil, fmt.Errorf("unknown provider: %s (supported: claude, codex, gemini)", provider)
 	}
 }
 
@@ -44,5 +50,14 @@ func newCodexAgentFromConfig(cfg *config.Config) *agents.CodexAgent {
 	}
 	return agents.NewCodexAgent(
 		agents.WithDangerouslyBypassApprovalsAndSandbox(cfg.Providers.Codex.DangerouslyBypassApprovalsAndSandbox),
+	)
+}
+
+func newGeminiAgentFromConfig(cfg *config.Config) *agents.GeminiAgent {
+	if cfg == nil {
+		return agents.NewGeminiAgent()
+	}
+	return agents.NewGeminiAgent(
+		agents.WithGeminiYolo(cfg.Providers.Gemini.Yolo),
 	)
 }

@@ -265,11 +265,12 @@ func runScheduledTasks(ctx context.Context, cfg *config.Config, database *db.DB,
 	// Initialize providers
 	claudeProvider := providers.NewClaudeWithPath(cfg.ExpandedProviderPath("claude"))
 	codexProvider := providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex"))
+	geminiProvider := providers.NewGeminiWithPath(cfg.ExpandedProviderPath("gemini"))
 
 	// Initialize budget manager
 	cal := calibrator.New(database, cfg)
 	trend := trends.NewAnalyzer(database, cfg.Budget.SnapshotRetentionDays)
-	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
+	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, geminiProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
 
 	report := newRunReport(time.Now(), calculateRunBudgetStart(cfg, budgetMgr, log))
 
@@ -554,6 +555,7 @@ func takeSnapshot(ctx context.Context, cfg *config.Config, database *db.DB, log 
 		database,
 		providers.NewClaudeWithPath(cfg.ExpandedProviderPath("claude")),
 		providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex")),
+		providers.NewGeminiWithPath(cfg.ExpandedProviderPath("gemini")),
 		scraper,
 		weekStartDayFromConfig(cfg),
 	)
@@ -579,10 +581,19 @@ func takeSnapshot(ctx context.Context, cfg *config.Config, database *db.DB, log 
 			log.Info("snapshot codex: local-only")
 		}
 	}
+
+	if cfg.Providers.Gemini.Enabled {
+		snapshot, err := collector.TakeSnapshot(ctx, "gemini")
+		if err != nil {
+			log.Warnf("snapshot gemini: %v", err)
+		} else {
+			log.Infof("snapshot gemini: %d tokens", snapshot.LocalTokens)
+		}
+	}
 }
 
 func pruneSnapshots(ctx context.Context, cfg *config.Config, database *db.DB, log *logging.Logger) {
-	collector := snapshots.NewCollector(database, nil, nil, nil, weekStartDayFromConfig(cfg))
+	collector := snapshots.NewCollector(database, nil, nil, nil, nil, weekStartDayFromConfig(cfg))
 	deleted, err := collector.Prune(cfg.Budget.SnapshotRetentionDays)
 	if err != nil {
 		log.Warnf("snapshot prune: %v", err)

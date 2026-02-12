@@ -256,9 +256,10 @@ func buildPreviewResult(cfg *config.Config, database *db.DB, projects []string, 
 
 	claudeProvider := providers.NewClaudeWithPath(cfg.ExpandedProviderPath("claude"))
 	codexProvider := providers.NewCodexWithPath(cfg.ExpandedProviderPath("codex"))
+	geminiProvider := providers.NewGeminiWithPath(cfg.ExpandedProviderPath("gemini"))
 	cal := calibrator.New(database, cfg)
 	trend := trends.NewAnalyzer(database, cfg.Budget.SnapshotRetentionDays)
-	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
+	budgetMgr := budget.NewManagerFromProviders(cfg, claudeProvider, codexProvider, geminiProvider, budget.WithBudgetSource(cal), budget.WithTrendAnalyzer(trend))
 
 	selector := tasks.NewSelector(cfg, st)
 	orch := orchestrator.New()
@@ -431,6 +432,14 @@ func collectProviderBudgets(cfg *config.Config, budgetMgr *budget.Manager) []pro
 			err:       err,
 		})
 	}
+	if cfg.Providers.Gemini.Enabled {
+		allowance, err := budgetMgr.CalculateAllowance("gemini")
+		summaries = append(summaries, providerBudgetSummary{
+			name:      "gemini",
+			allowance: allowance,
+			err:       err,
+		})
+	}
 	return summaries
 }
 
@@ -556,6 +565,9 @@ func previewProvider(cfg *config.Config) (string, error) {
 	}
 	if cfg.Providers.Codex.Enabled {
 		return "codex", nil
+	}
+	if cfg.Providers.Gemini.Enabled {
+		return "gemini", nil
 	}
 	return "", fmt.Errorf("no providers enabled for preview")
 }

@@ -32,6 +32,12 @@ type CodexUsage interface {
 	GetWeeklyTokens() (int64, error)
 }
 
+// GeminiUsage defines local usage access for Gemini.
+type GeminiUsage interface {
+	GetTodayTokens() (int64, error)
+	GetWeeklyTokens() (int64, error)
+}
+
 // Snapshot represents a stored usage snapshot.
 type Snapshot struct {
 	ID               int64
@@ -62,12 +68,13 @@ type Collector struct {
 	db           *db.DB
 	claude       ClaudeUsage
 	codex        CodexUsage
+	gemini       GeminiUsage
 	scraper      UsageScraper
 	weekStartDay time.Weekday
 }
 
 // NewCollector creates a snapshot collector.
-func NewCollector(database *db.DB, claude ClaudeUsage, codex CodexUsage, scraper UsageScraper, weekStartDay time.Weekday) *Collector {
+func NewCollector(database *db.DB, claude ClaudeUsage, codex CodexUsage, gemini GeminiUsage, scraper UsageScraper, weekStartDay time.Weekday) *Collector {
 	if weekStartDay < time.Sunday || weekStartDay > time.Saturday {
 		weekStartDay = time.Monday
 	}
@@ -75,6 +82,7 @@ func NewCollector(database *db.DB, claude ClaudeUsage, codex CodexUsage, scraper
 		db:           database,
 		claude:       claude,
 		codex:        codex,
+		gemini:       gemini,
 		scraper:      scraper,
 		weekStartDay: weekStartDay,
 	}
@@ -141,6 +149,14 @@ func (c *Collector) TakeSnapshot(ctx context.Context, provider string) (Snapshot
 				sessionResetTime = result.SessionResetTime
 				weeklyResetTime = result.WeeklyResetTime
 			}
+		}
+	case "gemini":
+		if c.gemini == nil {
+			return Snapshot{}, errors.New("gemini provider is nil")
+		}
+		localWeekly, localDaily, err = geminiTokenTotals(c.gemini)
+		if err != nil {
+			return Snapshot{}, err
 		}
 	default:
 		return Snapshot{}, fmt.Errorf("unknown provider: %s", provider)
@@ -381,6 +397,19 @@ func nullString(value string) any {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: value, Valid: true}
+}
+
+// geminiTokenTotals returns weekly and daily token totals from Gemini session files.
+func geminiTokenTotals(gemini GeminiUsage) (int64, int64, error) {
+	weekly, err := gemini.GetWeeklyTokens()
+	if err != nil {
+		return 0, 0, fmt.Errorf("get weekly tokens: %w", err)
+	}
+	daily, err := gemini.GetTodayTokens()
+	if err != nil {
+		return 0, 0, fmt.Errorf("get today tokens: %w", err)
+	}
+	return weekly, daily, nil
 }
 
 // codexTokenTotals returns weekly and daily token totals from Codex session files.
