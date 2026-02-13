@@ -212,3 +212,74 @@ func TestHandleSafetyInput_TogglesGemini(t *testing.T) {
 		t.Fatal("expected Yolo to be toggled back to false")
 	}
 }
+
+func TestHandleProvidersInput_TogglesEnabled(t *testing.T) {
+	m := &setupModel{
+		cfg: &config.Config{
+			Providers: config.ProvidersConfig{
+				Claude: config.ProviderConfig{Enabled: true},
+				Codex:  config.ProviderConfig{Enabled: true},
+				Gemini: config.ProviderConfig{Enabled: false},
+			},
+		},
+	}
+
+	spaceMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}
+
+	// cursor 0 = Claude
+	m.providerCursor = 0
+	m.handleProvidersInput(spaceMsg)
+	if m.cfg.Providers.Claude.Enabled {
+		t.Fatal("expected Claude.Enabled to be toggled to false")
+	}
+	m.handleProvidersInput(spaceMsg)
+	if !m.cfg.Providers.Claude.Enabled {
+		t.Fatal("expected Claude.Enabled to be toggled back to true")
+	}
+
+	// cursor 1 = Codex
+	m.providerCursor = 1
+	m.handleProvidersInput(spaceMsg)
+	if m.cfg.Providers.Codex.Enabled {
+		t.Fatal("expected Codex.Enabled to be toggled to false")
+	}
+
+	// cursor 2 = Gemini
+	m.providerCursor = 2
+	m.handleProvidersInput(spaceMsg)
+	if !m.cfg.Providers.Gemini.Enabled {
+		t.Fatal("expected Gemini.Enabled to be toggled to true")
+	}
+}
+
+func TestRenderProviderFields_ShowsAllProviders(t *testing.T) {
+	m := &setupModel{
+		cfg: &config.Config{
+			Providers: config.ProvidersConfig{
+				Claude: config.ProviderConfig{Enabled: true},
+				Codex:  config.ProviderConfig{Enabled: false},
+				Gemini: config.ProviderConfig{Enabled: true},
+			},
+		},
+	}
+
+	var b strings.Builder
+	renderProviderFields(&b, m)
+	out := b.String()
+
+	for _, name := range []string{"Claude", "Codex", "Gemini"} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("expected %q in rendered output, got:\n%s", name, out)
+		}
+	}
+
+	if !strings.Contains(out, "[ON] Claude") {
+		t.Fatalf("expected Claude to show [ON], got:\n%s", out)
+	}
+	if !strings.Contains(out, "[OFF] Codex") {
+		t.Fatalf("expected Codex to show [OFF], got:\n%s", out)
+	}
+	if !strings.Contains(out, "[ON] Gemini") {
+		t.Fatalf("expected Gemini to show [ON], got:\n%s", out)
+	}
+}

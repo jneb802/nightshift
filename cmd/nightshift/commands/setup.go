@@ -57,6 +57,7 @@ const (
 	stepConfig
 	stepProjects
 	stepBudget
+	stepProviders
 	stepSafety
 	stepTaskPreset
 	stepTaskSelect
@@ -95,7 +96,8 @@ type setupModel struct {
 	budgetEditing bool
 	budgetErr     string
 
-	safetyCursor int
+	providerCursor int
+	safetyCursor   int
 
 	taskPresetCursor int
 	taskCursor       int
@@ -281,6 +283,8 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleProjectsInput(msg)
 		case stepBudget:
 			return m.handleBudgetInput(msg)
+		case stepProviders:
+			return m.handleProvidersInput(msg)
 		case stepSafety:
 			return m.handleSafetyInput(msg)
 		case stepTaskPreset:
@@ -396,6 +400,13 @@ func (m *setupModel) View() string {
 		if m.budgetErr != "" {
 			b.WriteString("\nError: " + m.budgetErr + "\n")
 		}
+		b.WriteString("\nPress Enter to continue.\n")
+	case stepProviders:
+		b.WriteString(styleAccent.Render("Providers"))
+		b.WriteString("\n")
+		b.WriteString("Enable or disable providers. Disabled providers are skipped during runs.\n")
+		b.WriteString("Use ↑/↓ to select, space to toggle.\n\n")
+		renderProviderFields(&b, m)
 		b.WriteString("\nPress Enter to continue.\n")
 	case stepSafety:
 		b.WriteString(styleAccent.Render("Approvals & sandbox"))
@@ -769,7 +780,7 @@ func (m *setupModel) handleBudgetInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.budgetInput.Focus()
 	case "enter":
 		m.applyBudgetDefaults()
-		return m, m.setStep(stepSafety)
+		return m, m.setStep(stepProviders)
 	}
 	return m, nil
 }
@@ -789,6 +800,31 @@ func (m *setupModel) handlePresetInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.preset = presets[m.taskPresetCursor]
 		m.taskItems = makeTaskItems(m.cfg, m.projects, m.preset)
 		return m, m.setStep(stepTaskSelect)
+	}
+	return m, nil
+}
+
+func (m *setupModel) handleProvidersInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.providerCursor > 0 {
+			m.providerCursor--
+		}
+	case "down", "j":
+		if m.providerCursor < 2 {
+			m.providerCursor++
+		}
+	case " ":
+		switch m.providerCursor {
+		case 0:
+			m.cfg.Providers.Claude.Enabled = !m.cfg.Providers.Claude.Enabled
+		case 1:
+			m.cfg.Providers.Codex.Enabled = !m.cfg.Providers.Codex.Enabled
+		case 2:
+			m.cfg.Providers.Gemini.Enabled = !m.cfg.Providers.Gemini.Enabled
+		}
+	case "enter":
+		return m, m.setStep(stepSafety)
 	}
 	return m, nil
 }
@@ -1547,6 +1583,29 @@ func renderBudgetFields(b *strings.Builder, m *setupModel) {
 	}
 }
 
+func renderProviderFields(b *strings.Builder, m *setupModel) {
+	items := []struct {
+		label   string
+		enabled bool
+	}{
+		{label: "Claude", enabled: m.cfg.Providers.Claude.Enabled},
+		{label: "Codex", enabled: m.cfg.Providers.Codex.Enabled},
+		{label: "Gemini", enabled: m.cfg.Providers.Gemini.Enabled},
+	}
+
+	for i, item := range items {
+		cursor := " "
+		if i == m.providerCursor {
+			cursor = ">"
+		}
+		state := "OFF"
+		if item.enabled {
+			state = "ON"
+		}
+		fmt.Fprintf(b, " %s [%s] %s\n", cursor, state, item.label)
+	}
+}
+
 func renderSafetyFields(b *strings.Builder, m *setupModel) {
 	items := []struct {
 		label     string
@@ -1779,6 +1838,7 @@ func setupSteps(includePathStep bool) []setupStepInfo {
 		{step: stepConfig, label: "Global config"},
 		{step: stepProjects, label: "Projects"},
 		{step: stepBudget, label: "Budget"},
+		{step: stepProviders, label: "Providers"},
 		{step: stepSafety, label: "Safety"},
 		{step: stepTaskPreset, label: "Task presets"},
 		{step: stepTaskSelect, label: "Task selection"},
