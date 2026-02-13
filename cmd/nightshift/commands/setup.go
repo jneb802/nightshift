@@ -1540,25 +1540,24 @@ func renderEnvChecks(cfg *config.Config) string {
 	} else {
 		b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "tmux available"))
 	}
-	if cfg.Providers.Claude.Enabled {
-		if _, err := os.Stat(cfg.ExpandedProviderPath("claude")); err != nil {
-			b.WriteString(fmt.Sprintf("  %s %s\n", styleWarn.Render("Note:"), "Claude data path not found"))
-		} else {
-			b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "Claude data path found"))
-		}
+	providerChecks := []struct {
+		name    string
+		enabled bool
+		key     string
+	}{
+		{"Claude", cfg.Providers.Claude.Enabled, "claude"},
+		{"Codex", cfg.Providers.Codex.Enabled, "codex"},
+		{"Gemini", cfg.Providers.Gemini.Enabled, "gemini"},
 	}
-	if cfg.Providers.Codex.Enabled {
-		if _, err := os.Stat(cfg.ExpandedProviderPath("codex")); err != nil {
-			b.WriteString(fmt.Sprintf("  %s %s\n", styleWarn.Render("Note:"), "Codex data path not found"))
-		} else {
-			b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "Codex data path found"))
+	for _, p := range providerChecks {
+		if !p.enabled {
+			b.WriteString(fmt.Sprintf("  %s %s (disabled)\n", styleDim.Render("--"), p.name))
+			continue
 		}
-	}
-	if cfg.Providers.Gemini.Enabled {
-		if _, err := os.Stat(cfg.ExpandedProviderPath("gemini")); err != nil {
-			b.WriteString(fmt.Sprintf("  %s %s\n", styleWarn.Render("Note:"), "Gemini data path not found"))
+		if _, err := os.Stat(cfg.ExpandedProviderPath(p.key)); err != nil {
+			b.WriteString(fmt.Sprintf("  %s %s data path not found\n", styleWarn.Render("Note:"), p.name))
 		} else {
-			b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "Gemini data path found"))
+			b.WriteString(fmt.Sprintf("  %s %s data path found\n", styleOk.Render("OK:"), p.name))
 		}
 	}
 	return b.String()
