@@ -800,7 +800,7 @@ func (m *setupModel) handleSafetyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.safetyCursor--
 		}
 	case "down", "j":
-		if m.safetyCursor < 1 {
+		if m.safetyCursor < 2 {
 			m.safetyCursor++
 		}
 	case " ":
@@ -809,6 +809,8 @@ func (m *setupModel) handleSafetyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfg.Providers.Claude.DangerouslySkipPermissions = !m.cfg.Providers.Claude.DangerouslySkipPermissions
 		case 1:
 			m.cfg.Providers.Codex.DangerouslyBypassApprovalsAndSandbox = !m.cfg.Providers.Codex.DangerouslyBypassApprovalsAndSandbox
+		case 2:
+			m.cfg.Providers.Gemini.Yolo = !m.cfg.Providers.Gemini.Yolo
 		}
 	case "enter":
 		return m, m.setStep(stepTaskPreset)
@@ -1516,6 +1518,13 @@ func renderEnvChecks(cfg *config.Config) string {
 			b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "Codex data path found"))
 		}
 	}
+	if cfg.Providers.Gemini.Enabled {
+		if _, err := os.Stat(cfg.ExpandedProviderPath("gemini")); err != nil {
+			b.WriteString(fmt.Sprintf("  %s %s\n", styleWarn.Render("Note:"), "Gemini data path not found"))
+		} else {
+			b.WriteString(fmt.Sprintf("  %s %s\n", styleOk.Render("OK:"), "Gemini data path found"))
+		}
+	}
 	return b.String()
 }
 
@@ -1553,6 +1562,11 @@ func renderSafetyFields(b *strings.Builder, m *setupModel) {
 			label:     "Codex:  --dangerously-bypass-approvals-and-sandbox",
 			enabled:   m.cfg.Providers.Codex.DangerouslyBypassApprovalsAndSandbox,
 			available: m.cfg.Providers.Codex.Enabled,
+		},
+		{
+			label:     "Gemini: --yolo",
+			enabled:   m.cfg.Providers.Gemini.Yolo,
+			available: m.cfg.Providers.Gemini.Enabled,
 		},
 	}
 

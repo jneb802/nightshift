@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -172,5 +173,42 @@ func TestMakeTaskItems_PreservesExplicitEnabledTasks(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected bug-finder task to exist in setup list")
+	}
+}
+
+func TestRenderEnvChecks_IncludesGemini(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Providers: config.ProvidersConfig{
+			Gemini: config.ProviderConfig{
+				Enabled:  true,
+				DataPath: dir,
+			},
+		},
+	}
+	out := renderEnvChecks(cfg)
+	if !strings.Contains(out, "Gemini data path") {
+		t.Fatalf("expected Gemini data path check in output, got:\n%s", out)
+	}
+}
+
+func TestHandleSafetyInput_TogglesGemini(t *testing.T) {
+	m := &setupModel{
+		cfg:          &config.Config{},
+		safetyCursor: 2,
+	}
+
+	if m.cfg.Providers.Gemini.Yolo {
+		t.Fatal("expected Yolo to start as false")
+	}
+
+	m.handleSafetyInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	if !m.cfg.Providers.Gemini.Yolo {
+		t.Fatal("expected Yolo to be toggled to true")
+	}
+
+	m.handleSafetyInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	if m.cfg.Providers.Gemini.Yolo {
+		t.Fatal("expected Yolo to be toggled back to false")
 	}
 }
