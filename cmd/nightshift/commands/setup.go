@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1712,7 +1713,10 @@ func makeTaskItems(cfg *config.Config, projects []string, preset setup.Preset) [
 
 func runSnapshotCmd(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
+		prev := log.Writer()
+		log.SetOutput(io.Discard)
 		output, err := runSnapshot(cfg)
+		log.SetOutput(prev)
 		return snapshotMsg{output: output, err: err}
 	}
 }
@@ -1788,7 +1792,10 @@ func formatSnapshotLine(snapshot snapshots.Snapshot) string {
 
 func runPreviewCmd(cfg *config.Config, projects []string) tea.Cmd {
 	return func() tea.Msg {
+		prev := log.Writer()
+		log.SetOutput(io.Discard)
 		output, err := buildSetupPreviewOutput(cfg, projects)
+		log.SetOutput(prev)
 		return previewMsg{output: output, err: err}
 	}
 }
